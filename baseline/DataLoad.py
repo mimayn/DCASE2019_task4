@@ -15,11 +15,17 @@ import librosa
 import warnings
 from torch.utils.data import Dataset
 from torch.utils.data.sampler import Sampler
-
+from pdb import set_trace as pause
+import torchaudio
 from utils.Logger import LOG
-
+import config as cfg
+import os
 torch.manual_seed(0)
 random.seed(0)
+
+
+
+
 
 
 class DataLoadDf(Dataset):
@@ -44,7 +50,7 @@ class DataLoadDf(Dataset):
         transform : function(), function to be applied to the sample (pytorch transformations)
         return_indexes: bool, whether or not to return indexes when use __getitem__
     """
-    def __init__(self, df, get_feature_file_func, encode_function, transform=None,
+    def __init__(self, df, wav_dir ,get_feature_file_func, encode_function, transform=None,
                  return_indexes=False):
 
         self.df = df
@@ -53,7 +59,26 @@ class DataLoadDf(Dataset):
         self.transform = transform
         self.return_indexes = return_indexes
         self.filenames = df.filename.drop_duplicates()
+        self.wav_dir = wav_dir
+        self.melspec_transform = torchaudio.transforms.MelSpectrogram(sample_rate=cfg.sample_rate ,
+                n_fft=cfg.n_window, hop_length=cfg.hop_length, f_min=cfg.f_min,
+                f_max=cfg.f_max,n_mels=cfg.n_mels)
 
+    def get_features_from_wav(self, filename, wav_dir):
+        target_fs = cfg.sample_rate
+        filepath = os.path.join(wav_dir,filename)
+        audio, sample_rate = torchaudio.load(filepath)
+
+        if len(audio.shape) > 1:
+            audio = torch.mean(audio, axis=0)
+        if target_fs is not None and sample_rate != target_fs:
+            audio = torchaudio.transforms.Resample(sample_rate, target_fs)(audio)
+        
+        sample_rate = target_fs
+        melspecgram = self.melspec_transform(audio)
+
+        return melspecgram.t()       
+    
     def set_return_indexes(self, val):
         """ Set the value of self.return_indexes
 
@@ -71,6 +96,7 @@ class DataLoadDf(Dataset):
         length = len(self.filenames)
         return length
 
+
     def get_sample(self, index):
         """From an index, get the features and the labels to create a sample
 
@@ -80,9 +106,22 @@ class DataLoadDf(Dataset):
         Returns:
             tuple
             Tuple containing the features and the labels (numpy.array, numpy.array)
+                """
+        #pause()
+        if self.get_feature_file_func is not None:
+            features = self.get_feature_file_func(self.filenames.iloc[index])
+        else:
+            features = self.get_features_from_wav(self.filenames.iloc[index],self.wav_dir)    
+        
+        #if cfg.augment:
+        #    features = stack_augmentations(features,cfg.n_aug)
 
-        """
-        features = self.get_feature_file_func(self.filenames.iloc[index])
+        #if (len(features.shape)==2):
+        #    features = np.expand_dims(features,axis=2)    # adding the channel dimension to input mel-spectrogram
+  
+
+
+
 
         # event_labels means weak labels, event_label means strong labels
         if "event_labels" in self.df.columns or {"onset", "offset", "event_label"}.issubset(self.df.columns):
@@ -115,6 +154,7 @@ class DataLoadDf(Dataset):
         else:
             y = label
         sample = features, y
+        
         return sample
 
     def __getitem__(self, index):
@@ -130,14 +170,16 @@ class DataLoadDf(Dataset):
 
         """
         sample = self.get_sample(index)
-
+        
         if self.transform:
             sample = self.transform(sample)
 
         if self.return_indexes:
             sample = (sample, index)
-
+           
         return sample
+
+      
 
     def set_transform(self, transform):
         """Set the transformations used on a sample
@@ -217,14 +259,23 @@ def pad_trunc_seq(x, max_len):
     Returns:
       ndarray, Padded or truncated input sequence data.
     """
-    length = len(x)
+
+    #if (len(x.shape))==3:
+    #    time_axis=1
+    #else:
+    #    time_axis=0    
+    time_axis=0
+    length = x.shape[time_axis]
     shape = x.shape
     if length < max_len:
-        pad_shape = (max_len - length,) + shape[1:]
+        pad_shape = list(shape)
+        pad_shape[time_axis]=max_len - length
+        #pad_shape = (max_len - length,) + shape[1:]
         pad = np.zeros(pad_shape)
-        x_new = np.concatenate((x, pad), axis=0)
+        x_new = np.concatenate((x, pad), axis=time_axis)
     elif length > max_len:
-        x_new = x[0:max_len]
+        if time_axis==0:
+            x_new = x[0:max_len]
     else:
         x_new = x
     return x_new
@@ -253,6 +304,7 @@ class PadOrTrunc:
         if type(sample) is tuple:
             sample = list(sample)
         # sample must be a tuple or a list
+
         for k in range(len(sample) - 1):
             sample[k] = pad_trunc_seq(sample[k], self.nb_frames)
 
@@ -285,6 +337,55 @@ class AugmentGaussianNoise:
         noise = sample + np.abs(np.random.normal(0, 0.5 ** 2, sample.shape))
 
         return sample, noise, label
+
+
+class AugmentSprinkleMask:
+    """ Pad or truncate a sequence given a number of frames
+           Args:
+               mean: float, mean of the Gaussian noise to add
+           Attributes:
+               std: float, std of the Gaussian noise to add
+           """
+    def __init__(self, n_aug=5, aug_type='random_mask',frac=0.25):
+        self.n_aug = n_aug
+        self.aug_type = aug_type
+        self.frac = frac
+
+    
+    def stack_augmentations(self, features,n_aug=5,aug_type='random_mask',frac=.25):
+
+        if aug_type == 'random_mask':
+
+            masks = self.create_masks(features,n_aug,frac=self.frac)
+            masked_specs = (np.tile(features,(n_aug,1,1))*masks).transpose(1,2,0)
+            return np.concatenate((np.expand_dims(features,axis=2),masked_specs),axis=2)
+
+            
+    def create_masks(self, spec,num_masks=5, frac=0.25):
+    
+        n = spec.shape[0]*spec.shape[1]
+        mask_arr = np.ones((num_masks, n))
+        n_points = int(np.ceil(n*frac))
+        mask_arr[:,:n_points] = 0
+        [np.random.shuffle(mask_arr[i,:]) for i in range(num_masks)]
+        masks = np.reshape(mask_arr,(num_masks,*spec.shape))
+        return masks
+
+
+    def __call__(self, sample):
+        """ Apply the transformation
+        Args:
+            sample: tuple or list, a sample defined by a DataLoad class
+
+        Returns:
+            list
+            The transformed tuple
+        """
+        feat, label = sample
+
+        sample = self.stack_augmentations(feat, self.n_aug, self.aug_type, self.frac)
+
+        return sample, label
 
 
 class ToTensor(object):

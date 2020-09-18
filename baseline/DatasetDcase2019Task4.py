@@ -16,7 +16,7 @@ import config as cfg
 from utils.Logger import LOG
 from download_data import download
 from utils.utils import create_folder, read_audio
-
+from pdb import set_trace as pause
 
 class DatasetDcase2019Task4:
     """DCASE 2018 task 4 dataset
@@ -193,6 +193,22 @@ class DatasetDcase2019Task4:
         fname = os.path.join(self.feature_dir, os.path.splitext(filename)[0] + ".npy")
         data = np.load(fname)
         return data
+        
+    
+    # def compute_augmented_features():
+    #    (audio, _) = read_audio(wav_path, cfg.sample_rate)
+    #    augmentation =        
+
+
+
+    #     if audio.shape[0] == 0:
+    #         print("File %s is corrupted!" % wav_path)
+    #     else:
+    #         mel_spec = self.calculate_mel_spec(audio)            
+
+
+
+
 
     def calculate_mel_spec(self, audio):
         """
@@ -241,16 +257,18 @@ class DatasetDcase2019Task4:
         t1 = time.time()
         df_meta = self.get_df_from_meta(tsv_audio, subpart_data)
         LOG.info("{} Total file number: {}".format(tsv_audio, len(df_meta.filename.unique())))
-
+        
         for ind, wav_name in enumerate(df_meta.filename.unique()):
             if ind % 500 == 0:
                 LOG.debug(ind)
             wav_dir = self.get_audio_dir_path_from_meta(tsv_audio)
             wav_path = os.path.join(wav_dir, wav_name)
-
+            
+            #df_meta.loc[df_meta['filename']==wav_name,'wav_dir']= wav_dir    
+            
             out_filename = os.path.splitext(wav_name)[0] + ".npy"
             out_path = os.path.join(self.feature_dir, out_filename)
-
+            
             if not os.path.exists(out_path):
                 if not os.path.isfile(wav_path):
                     LOG.error("File %s is in the tsv file but the feature is not extracted!" % wav_path)
@@ -261,9 +279,10 @@ class DatasetDcase2019Task4:
                         print("File %s is corrupted!" % wav_path)
                     else:
                         mel_spec = self.calculate_mel_spec(audio)
-
+                        pause()
                         np.save(out_path, mel_spec)
 
                     LOG.debug("compute features time: %s" % (time.time() - t1))
 
-        return df_meta.reset_index(drop=True)
+        
+        return df_meta.reset_index(drop=True), wav_dir

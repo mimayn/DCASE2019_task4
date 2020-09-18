@@ -4,7 +4,8 @@ import numpy as np
 import torch
 import json
 from utils.Logger import LOG
-
+from pdb import set_trace as pause
+from tqdm import tqdm
 
 class Scaler(object):
     """
@@ -38,11 +39,12 @@ class Scaler(object):
        """
         LOG.info('computing mean')
         start = time.time()
-
+        #pause()
         shape = None
 
         counter = 0
-        for sample in dataset:
+        for sample in tqdm(dataset):
+            
             if type(sample) in [tuple, list] and len(sample)==2:
                 batch_X, _ = sample
             else:
@@ -97,12 +99,24 @@ class Scaler(object):
         return self.mean_, self.std_
 
     def normalize(self, batch):
+        
+        d = batch.shape[-1]
         if type(batch) is torch.Tensor:
             batch_ = batch.numpy()
-            batch_ = (batch_ - self.mean_) / self.std_
+            if (d == len(self.mean_)):    
+                batch_ = (batch_ - self.mean_) / self.std_
+            else:
+                #batch_ = (batch_ - np.tile(self.mean_,(d,1)).T) / np.tile(self.std_,(d,1)).T
+                batch_ = np.swapaxes((np.swapaxes(batch_,-1,-2) - self.mean_) / self.std_,-1,-2)
             return torch.Tensor(batch_)
         else:
-            return (batch - self.mean_) / self.std_
+            if (d == len(self.mean_)):    
+                return (batch - self.mean_) / self.std_
+            else:
+                #return (batch - np.tile(self.mean_,(d,1)).T) / np.tile(self.std_,(d,1)).T
+                return np.swapaxes((np.swapaxes(batch,-1,-2) - self.mean_) / self.std_,-1,-2)
+
+            
 
     def state_dict(self):
         if type(self.mean_) is not np.ndarray:

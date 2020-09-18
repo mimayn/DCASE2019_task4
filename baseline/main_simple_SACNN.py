@@ -12,6 +12,7 @@ import pandas as pd
 import time
 import numpy as np
 from pdb import set_trace as pause
+from tqdm import tqdm
 
 import torch
 from torch.utils.data import DataLoader
@@ -22,25 +23,11 @@ from DataLoad import DataLoadDf, ConcatDataset, MultiStreamBatchSampler
 from utils.Scaler import Scaler
 from TestModel import test_model
 from evaluation_measures import get_f_measure_by_class, get_predictions, audio_tagging_results, compute_strong_metrics
-from models.CRNN import CRNN
+from models.SACNN import SACNN
 import config as cfg
 from utils.utils import ManyHotEncoder, AverageMeterSet, create_folder, SaveBest, to_cuda_if_available, weights_init, \
     get_transforms
 from utils.Logger import LOG
-import matplotlib.pyplot as plt
-import seaborn
-
-def plot_strong_output(ax,target,pred):
-    
-    t = range(target.shape[0])
-
-    for i, a in enumerate(ax):
-        a.plot(t,target[:,i])
-        a.axis('off')
-        a.fill_between(t,target[:,i],0)
-        a.plot(t,pred[:,i],'r')
-    seaborn.despine(left=True, bottom=True, right=True)       
-
 
 
 def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=None):
@@ -49,22 +36,15 @@ def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=Non
 
     meters = AverageMeterSet()
     meters.update('lr', optimizer.param_groups[0]['lr'])
+
     LOG.debug("Nb batches: {}".format(len(train_loader)))
     start = time.time()
-    fig, ax = plt.subplots(10,1, sharex=True)
-    for i, (batch_input, target) in enumerate(train_loader):
+    for i, (batch_input, target) in tqdm(enumerate(train_loader),total = len(train_loader)):
         [batch_input, target] = to_cuda_if_available([batch_input, target])
         LOG.debug(batch_input.mean())
-        strong_pred, weak_pred = model(batch_input)
 
-        plot_strong_output(ax,target[idx,:,:].cpu(),strong_pred[idx,:,:].cpu().detach())
-        plt.pause(0.05)
-        
-        plt.show()
-    
+        strong_pred, weak_pred, att_map = model(batch_input)
         loss = 0
-        pause()
-
         if weak_mask is not None:
             # Weak BCE Loss
             # Trick to not take unlabeled data
@@ -86,6 +66,14 @@ def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=Non
 
             loss += strong_class_loss
 
+        #add synchrony loss
+        #loss+=
+        
+        #add total-variation loss
+        #loss+=
+        #add Binarization loss
+        #loss+=
+        
         assert not (np.isnan(loss.item()) or loss.item() > 1e5), 'Loss explosion: {}'.format(loss.item())
         assert not loss.item() < 0, 'Loss problem, cannot be negative'
         meters.update('Loss', loss.item())
@@ -105,7 +93,7 @@ def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=Non
 
 
 if __name__ == '__main__':
-    LOG.info("Simple CRNNs")
+    LOG.info("Simple SACNNs")
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("-s", '--subpart_data', type=int, default=None, dest="subpart_data",
                         help="Number of files to be used. Useful when testing on small number of files.")
@@ -123,7 +111,7 @@ if __name__ == '__main__':
     else:
         add_dir_path = "_synthetic_only"
 
-    store_dir = os.path.join("stored_data", "simple_CRNN" + add_dir_path)
+    store_dir = os.path.join("stored_data", "simple_SACNN" + add_dir_path)
     saved_model_dir = os.path.join(store_dir, "model")
     saved_pred_dir = os.path.join(store_dir, "predictions")
     create_folder(store_dir)
@@ -134,29 +122,38 @@ if __name__ == '__main__':
     # Model
     # ##############
 
-    crnn_kwargs = cfg.crnn_kwargs
-    crnn = CRNN(**crnn_kwargs)
-    crnn.apply(weights_init)
+    sacnn_kwargs = cfg.sacnn_kwargs
+    #pause()
+    sacnn = SACNN(**sacnn_kwargs)
+        #cnn = CNN(cfg)
+    #cnn.apply(weights_init)
     pooling_time_ratio = cfg.pooling_time_ratio
 
-    LOG.info(crnn)
+    LOG.info(sacnn)
 
     # ##############
     # DATA
     # ##############
+    
     dataset = DatasetDcase2019Task4(os.path.join(cfg.workspace),
                                     base_feature_dir=os.path.join(cfg.workspace, "dataset", "features"),
                                     save_log_feature=False)
-
-    weak_df = dataset.initialize_and_get_df(cfg.weak, reduced_number_of_data)
-    synthetic_df = dataset.initialize_and_get_df(cfg.synthetic, reduced_number_of_data, download=False)
-    validation_df = dataset.initialize_and_get_df(cfg.validation, reduced_number_of_data)
-
+    if not cfg.online_feature_extraction:
+        feature_retrieval_func = dataset.get_feature_file
+    else:
+        feature_retrieval_func = None  #if set to None will extract features on-the-fly 
+                                    #directly from wav files 
+    
+    weak_df, weak_wav_dir = dataset.initialize_and_get_df(cfg.weak, reduced_number_of_data)
+    synthetic_df, synthetic_wav_dir = dataset.initialize_and_get_df(cfg.synthetic, reduced_number_of_data, download=False)
+    validation_df, validation_wav_dir = dataset.initialize_and_get_df(cfg.validation, reduced_number_of_data)
+    
     classes = DatasetDcase2019Task4.get_classes([weak_df, validation_df, synthetic_df])
 
     # Be careful, frames is max_frames // pooling_time_ratio because max_pooling is applied on time axis in the model
     many_hot_encoder = ManyHotEncoder(classes, n_frames=cfg.max_frames // pooling_time_ratio)
 
+    #transforms = get_transforms(cfg.max_frames,augment_type='random_mask')
     transforms = get_transforms(cfg.max_frames)
 
     # Divide weak in train and valid
@@ -164,9 +161,10 @@ if __name__ == '__main__':
     valid_weak_df = weak_df.drop(train_weak_df.index).reset_index(drop=True)
     train_weak_df = train_weak_df.reset_index(drop=True)
     LOG.debug(valid_weak_df.event_labels.value_counts())
-    train_weak_data = DataLoadDf(train_weak_df, dataset.get_feature_file, many_hot_encoder.encode_strong_df,
+    #train_weak_data = DataLoadDf(train_weak_df, dataset.get_feature_file, many_hot_encoder.encode_strong_df,
+    #                             transform=transforms)
+    train_weak_data = DataLoadDf(train_weak_df, weak_wav_dir, feature_retrieval_func, many_hot_encoder.encode_strong_df,
                                  transform=transforms)
-
     # Divide synthetic in train and valid
     filenames_train = synthetic_df.filename.drop_duplicates().sample(frac=0.8, random_state=26)
     train_synth_df = synthetic_df[synthetic_df.filename.isin(filenames_train)]
@@ -179,7 +177,7 @@ if __name__ == '__main__':
     train_synth_df_frames.offset = train_synth_df_frames.offset * cfg.sample_rate // cfg.hop_length // pooling_time_ratio
     LOG.debug(valid_synth_df.event_label.value_counts())
     LOG.debug(valid_synth_df)
-    train_synth_data = DataLoadDf(train_synth_df_frames, dataset.get_feature_file,
+    train_synth_data = DataLoadDf(train_synth_df_frames, synthetic_wav_dir, feature_retrieval_func,
                                   many_hot_encoder.encode_strong_df,
                                   transform=transforms)
 
@@ -196,10 +194,14 @@ if __name__ == '__main__':
 
     transforms_valid = get_transforms(cfg.max_frames, scaler=scaler)
     # Validation dataset is only used to get an idea of wha could be results on evaluation dataset
-    validation_dataset = DataLoadDf(validation_df, dataset.get_feature_file, many_hot_encoder.encode_strong_df,
+    validation_dataset = DataLoadDf(validation_df, validation_wav_dir, feature_retrieval_func, many_hot_encoder.encode_strong_df,
                                     transform=transforms_valid)
+    if cfg.augment:
+        augment_type = 'random_mask'
+    else:
+        augment_type = None
 
-    transforms = get_transforms(cfg.max_frames, scaler)
+    transforms = get_transforms(cfg.max_frames, augment_type = augment_type, n_aug = cfg.n_aug, scaler=scaler)
     train_synth_data.set_transform(transforms)
     if not no_weak:
         train_weak_data.set_transform(transforms)
@@ -208,7 +210,7 @@ if __name__ == '__main__':
         sampler = MultiStreamBatchSampler(concat_dataset,
                                           batch_sizes=[cfg.batch_size // 2, cfg.batch_size // 2])
         training_data = DataLoader(concat_dataset, batch_sampler=sampler)
-        valid_weak_data = DataLoadDf(valid_weak_df, dataset.get_feature_file, many_hot_encoder.encode_strong_df,
+        valid_weak_data = DataLoadDf(valid_weak_df, weak_wav_dir, feature_retrieval_func, many_hot_encoder.encode_strong_df,
                                      transform=transforms_valid)
         weak_mask = slice(cfg.batch_size // 2)
         strong_mask = slice(cfg.batch_size // 2, cfg.batch_size)
@@ -217,22 +219,22 @@ if __name__ == '__main__':
         strong_mask = slice(cfg.batch_size)  # Not masking
         weak_mask = None
 
-    valid_synth_data = DataLoadDf(valid_synth_df, dataset.get_feature_file, many_hot_encoder.encode_strong_df,
+    valid_synth_data = DataLoadDf(valid_synth_df, synthetic_wav_dir, feature_retrieval_func, many_hot_encoder.encode_strong_df,
                                   transform=transforms_valid)
 
     # ##############
     # Train
     # ##############
     optim_kwargs = {"lr": 0.001, "betas": (0.9, 0.999)}
-    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, crnn.parameters()), **optim_kwargs)
+    optimizer = torch.optim.Adam(filter(lambda p: p.requires_grad, sacnn.parameters()), **optim_kwargs)
     LOG.info(optimizer)
     bce_loss = nn.BCELoss()
 
     state = {
-        'model': {"name": crnn.__class__.__name__,
+        'model': {"name": sacnn.__class__.__name__,
                   'args': '',
-                  "kwargs": crnn_kwargs,
-                  'state_dict': crnn.state_dict()},
+                  "kwargs": sacnn_kwargs,
+                  'state_dict': sacnn.state_dict()},
         'optimizer': {"name": optimizer.__class__.__name__,
                       'args': '',
                       "kwargs": optim_kwargs,
@@ -245,31 +247,31 @@ if __name__ == '__main__':
     save_best_cb = SaveBest("sup")
 
     # Eval 2018
-    eval_2018_df = dataset.initialize_and_get_df(cfg.eval2018, reduced_number_of_data)
-    eval_2018 = DataLoadDf(eval_2018_df, dataset.get_feature_file, many_hot_encoder.encode_strong_df,
+    eval_2018_df, _ = dataset.initialize_and_get_df(cfg.eval2018, reduced_number_of_data)
+    eval_2018 = DataLoadDf(eval_2018_df, validation_wav_dir, feature_retrieval_func, many_hot_encoder.encode_strong_df,
                            transform=transforms_valid)
 
-    [crnn] = to_cuda_if_available([crnn])
-    for epoch in range(cfg.n_epoch):
-        crnn = crnn.train()
+    [sacnn] = to_cuda_if_available([sacnn])
+    for epoch in tqdm(range(cfg.n_epoch)):
+        sacnn = sacnn.train()
 
-        train(training_data, crnn, optimizer, epoch, weak_mask, strong_mask)
+        train(training_data, sacnn, optimizer, epoch, weak_mask, strong_mask)
 
-        crnn = crnn.eval()
+        sacnn = sacnn.eval()
         LOG.info("Training synthetic metric:")
-        train_predictions = get_predictions(crnn, train_synth_data, many_hot_encoder.decode_strong, pooling_time_ratio,
+        train_predictions = get_predictions(sacnn, train_synth_data, many_hot_encoder.decode_strong, pooling_time_ratio,
                                             save_predictions=None)
         train_metric = compute_strong_metrics(train_predictions, train_synth_df)
 
         if not no_weak:
             LOG.info("Training weak metric:")
-            weak_metric = get_f_measure_by_class(crnn, len(classes),
+            weak_metric = get_f_measure_by_class(sacnn, len(classes),
                                                  DataLoader(train_weak_data, batch_size=cfg.batch_size))
             LOG.info("Weak F1-score per class: \n {}".format(pd.DataFrame(weak_metric * 100, many_hot_encoder.labels)))
             LOG.info("Weak F1-score macro averaged: {}".format(np.mean(weak_metric)))
 
             LOG.info("Valid weak metric:")
-            weak_metric = get_f_measure_by_class(crnn, len(classes),
+            weak_metric = get_f_measure_by_class(sacnn, len(classes),
                                                  DataLoader(valid_weak_data, batch_size=cfg.batch_size))
 
             LOG.info(
@@ -277,10 +279,10 @@ if __name__ == '__main__':
             LOG.info("Weak F1-score macro averaged: {}".format(np.mean(weak_metric)))
 
         LOG.info("Valid synthetic metric:")
-        predictions = get_predictions(crnn, valid_synth_data, many_hot_encoder.decode_strong, pooling_time_ratio)
+        predictions = get_predictions(sacnn, valid_synth_data, many_hot_encoder.decode_strong, pooling_time_ratio)
         valid_metric = compute_strong_metrics(predictions, valid_synth_df)
 
-        state['model']['state_dict'] = crnn.state_dict()
+        state['model']['state_dict'] = sacnn.state_dict()
         state['optimizer']['state_dict'] = optimizer.state_dict()
         state['epoch'] = epoch
         state['valid_metric'] = valid_metric.results()
@@ -308,10 +310,10 @@ if __name__ == '__main__':
     # Validation
     # ##############
     predicitons_fname = os.path.join(saved_pred_dir, "baseline_validation.tsv")
-    test_model(state, cfg.validation, reduced_number_of_data, predicitons_fname)
+    test_model(SACNN, state, cfg.validation, reduced_number_of_data, predicitons_fname)
 
     # ##############
     # Evaluation
     # ##############
     predicitons_eval2019_fname = os.path.join(saved_pred_dir, "baseline_eval2019.tsv")
-    test_model(state, cfg.eval_desed, reduced_number_of_data, predicitons_eval2019_fname)
+    test_model(SACNN,state, cfg.eval_desed, reduced_number_of_data, predicitons_eval2019_fname)

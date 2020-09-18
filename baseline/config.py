@@ -36,12 +36,22 @@ weight_decay_after_rampup = 0.999
 max_consistency_cost = 2
 max_learning_rate = 0.001
 
+
+tv_loss_lambda = 0
+Syn_loss_lambda = 0
+
+
 median_window = 5
+
+online_feature_extraction = False
 
 # Main
 num_workers = 12
-batch_size = 24
-n_epoch = 100
+batch_size = 4
+n_epoch = 2
+
+augment = True
+n_aug =1
 
 checkpoint_epochs = 1
 
@@ -57,3 +67,16 @@ crnn_kwargs = {"n_in_channel": 1, "nclass": len(classes), "attention": True, "n_
                "kernel_size": 3 * [3], "padding": 3 * [1], "stride": 3 * [1], "nb_filters": [64, 64, 64],
                 "pooling": list(3 * ((2, 4),))}
 pooling_time_ratio = 8  # 2 * 2 * 2
+
+cnn_kwargs = {"n_in_channel": 1, "nclass": len(classes), "attention": False,
+                "activation": "Relu",
+                "dropout": 0.5, "dilation" : 4*[(1,1)],
+               "kernel_size": 4 * [(3,3)], "pad": 4 * [(1,1)], "stride": 4 * [(1,1)], "nb_filters": [64, 128, 256, 512],
+                "pool_size": 3*[(2,2)] + [(1,1)], 'pool_type': "max"}
+
+
+sacnn_kwargs = {"n_in_channel": 1, "nclass": len(classes), "attention": False,
+                "activation": "Relu",
+                "dropout": 0.5, "dilation" : 4*[(1,1)],
+               "kernel_size": 4 * [(3,3)], "pad": 4 * [(1,1)], "stride": 4 * [(1,1)], "nb_filters": [64, 128, 256, 512],
+                "pool_size": 3*[(2,2)] + [(1,1)], 'pool_type': "max"}

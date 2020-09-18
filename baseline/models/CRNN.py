@@ -5,7 +5,7 @@ import torch
 
 from models.RNN import BidirectionalGRU
 from models.CNN import CNN
-
+from config import n_mels
 
 class CRNN(nn.Module):
 
@@ -18,8 +18,10 @@ class CRNN(nn.Module):
             for param in self.cnn.parameters():
                 param.requires_grad = False
         self.train_cnn = train_cnn
+        self.pooling = kwargs['pooling']
         if rnn_type == 'BGRU':
-            self.rnn = BidirectionalGRU(self.cnn.nb_filters[-1],
+            self.n_rnn_feats = self.cnn.nb_filters[-1]*n_mels/(self.pooling[0][1]*self.pooling[0][1]*self.pooling[0][1])
+            self.rnn = BidirectionalGRU(int(self.n_rnn_feats),
                                         n_RNN_cell, dropout=dropout_recurrent, num_layers=n_layers_RNN)
         else:
             NotImplementedError("Only BGRU supported for CRNN for now")
