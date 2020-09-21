@@ -36,7 +36,7 @@ def test_model(model, state, reference_tsv_path, reduced_number_of_data=None, st
     else:
         feature_retrieval_func = None  #if set to None will extract features on-the-fly 
                                     #directly from wav files 
-
+                                   
     model_kwargs = state["model"]["kwargs"]
     model_nn = model(**model_kwargs)
     model_nn.load(parameters=state["model"]["state_dict"])

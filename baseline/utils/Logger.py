@@ -3,6 +3,7 @@ import sys
 import config as cfg
 import os
 
+
 def create_logger(logger_name, log_file):
     '''
     Create a logger.
@@ -51,6 +52,9 @@ if cfg.add_perturbations:
     add_dir_path += "_{}_pertubations".format(cfg.n_perturb) 
 else:
     perturb_type = None
+
 store_dir = os.path.join("stored_data", "logs")
+if not os.path.exists(store_dir):
+    os.makedirs(store_dir)
 logger_path ="simple_{}".format(cfg.model_name) + add_dir_path+".log"
 LOG = create_logger("model-log", os.path.join(store_dir,logger_path))

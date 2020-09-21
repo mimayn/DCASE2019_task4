@@ -15,7 +15,7 @@ eval_desed = "dataset/metadata/eval/public.tsv"
 
 #dataset_composition = ['weak', 'synthetic']
 use_weak = True
-use_synthetic = False
+use_synthetic = True
 
 use_synthetic_as_weak = True
 
@@ -43,10 +43,11 @@ weight_decay_after_rampup = 0.999
 max_consistency_cost = 2
 max_learning_rate = 0.001
 
+visualize_training_loss = True
 
 tv_loss_lambda = 2
 asyn_loss_lambda = .7
-bin_loss_lambda = .7
+bin_loss_lambda = .2
 
 median_window = 5
 
@@ -55,7 +56,7 @@ online_feature_extraction = False
 # Main
 num_workers = 12
 batch_size = 2
-n_epoch = 50
+n_epoch = 10
 
 
 add_perturbations = True

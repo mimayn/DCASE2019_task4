@@ -26,7 +26,7 @@ from evaluation_measures import get_f_measure_by_class, get_predictions, audio_t
 from models.SACNN import SACNN
 import config as cfg
 from utils.utils import ManyHotEncoder, AverageMeterSet, create_folder, SaveBest, to_cuda_if_available, weights_init, \
-    get_transforms
+    get_transforms, VisdomLinePlotter
 from utils.Logger import LOG
 import losses
 
@@ -45,7 +45,7 @@ def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=Non
 
         strong_pred, weak_pred, att_map = model(batch_input)
         att_strong_pred = att_map[:,0,:,:,:].squeeze() 
-        
+        loss_dict={}
         loss = 0
         if weak_mask is not None:
             # Weak BCE Loss
@@ -60,27 +60,36 @@ def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=Non
             meters.update('Weak loss', weak_class_loss.item())
 
             loss += weak_class_loss
+            loss_dict['weak_data_loss'] = weak_class_loss.item()
 
         if strong_mask is not None:
-            # Strong BCE loss
-            strong_class_loss = class_criterion(strong_pred[strong_mask], target[strong_mask])
-            meters.update('Strong loss', strong_class_loss.item())
+            
+            if cfg.use_synthetic_as_weak:
+                target_weak = target.max(-2)[0]
+                strong_class_loss = class_criterion(weak_pred[strong_mask], target_weak[strong_mask])
+            
+            else:
+                # Strong BCE loss
+                strong_class_loss = class_criterion(strong_pred[strong_mask], target[strong_mask])
+                meters.update('Strong loss', strong_class_loss.item())
 
-            #evaluation of temporal attention maps as alternative predictions
-            att_strong_class_loss = class_criterion(att_strong_pred[strong_mask], target[strong_mask])
-            meters.update('Attention Map Strong loss', att_strong_class_loss.item())
+                #evaluation of temporal attention maps as alternative predictions
+                att_strong_class_loss = class_criterion(att_strong_pred[strong_mask], target[strong_mask])
+                meters.update('Attention Map Strong loss', att_strong_class_loss.item())
 
             loss += strong_class_loss
-        
+            loss_dict['synthetic_data_loss'] = strong_class_loss.item()
         # asynchrony loss
         asyn_loss = losses.asynchrony_loss(att_map, asyn_measure='mse-all', asyn_lambda=cfg.asyn_loss_lambda) 
-        
+        loss_dict['asyn_loss'] = asyn_loss.item()
         #total-variation loss
         tv_loss = losses.TV_loss(att_map, tv_lambda=cfg.tv_loss_lambda)
-        
+        loss_dict['tv_loss'] = tv_loss.item()
+
         # Binarization loss
         bin_loss = losses.binarization_loss(att_map, bin_lambda=cfg.bin_loss_lambda)
-        
+        loss_dict['bin_loss'] = bin_loss.item()
+
 
         meters.update('asynchrony loss', asyn_loss.item())
         meters.update('Total Variation loss', tv_loss.item())
@@ -89,7 +98,9 @@ def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=Non
 
 
         loss += asyn_loss + tv_loss + bin_loss
+        loss_dict['total_loss'] = loss.item()
         
+
         assert not (np.isnan(loss.item()) or loss.item() > 1e5), 'Loss explosion: {}'.format(loss.item())
         assert not loss.item() < 0, 'Loss problem, cannot be negative'
         meters.update('Loss', loss.item())
@@ -107,6 +118,7 @@ def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=Non
         '{meters}'.format(
             epoch, epoch_time, meters=meters))
 
+    return loss_dict
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="")
@@ -119,7 +131,9 @@ if __name__ == '__main__':
     use_weak = cfg.use_weak
     use_synthetic = cfg.use_synthetic
     
-
+    if cfg.visualize_training_loss:
+        global plotter
+        plotter = VisdomLinePlotter(env_name='Tutorial Plots')
 
     if use_weak and use_synthetic:
         add_dir_path = "_synthetic_and_weak"
@@ -294,7 +308,11 @@ if __name__ == '__main__':
     for epoch in tqdm(range(cfg.n_epoch)):
         sacnn = sacnn.train()
 
-        train(training_data, sacnn, optimizer, epoch, weak_mask, strong_mask)
+        loss_dict = train(training_data, sacnn, optimizer, epoch, weak_mask, strong_mask)
+        if cfg.visualize_training_loss:
+            for k in loss_dict.keys():
+                plotter.plot('loss', k, 'Training stats', epoch, loss_dict[k])
+
 
         sacnn = sacnn.eval()
         LOG.info("Training synthetic metric:")
@@ -302,13 +320,18 @@ if __name__ == '__main__':
         if use_synthetic:
             train_predictions,train_att_predictions = get_predictions(sacnn, train_synth_data, many_hot_encoder.decode_strong, pooling_time_ratio,
                                                 save_predictions=None)
-            pause()
+            
             #train metrics using networks final explicit predictions
+            LOG.info("Strong metric on training synthetic results network final output")
             train_metric = compute_strong_metrics(train_predictions, train_synth_df)
 
             #train metrics using attention network predictions
+            LOG.info("Strong metric on training synthetic results Attention network's output")
             att_train_metric = compute_strong_metrics(train_att_predictions, train_synth_df)
-
+            
+            if cfg.use_synthetic_as_weak:
+                LOG.info("Training weak metric on synthetic data (used as weak labels): \n")
+                print(audio_tagging_results(train_synth_df, train_predictions))
 
         if use_weak:
             LOG.info("Training weak metric:")
@@ -330,9 +353,17 @@ if __name__ == '__main__':
 
         predictions, att_predictions = get_predictions(sacnn, valid_synth_data, many_hot_encoder.decode_strong, pooling_time_ratio)
         
+        LOG.info("Strong metric on Validation synthetic results network final output")
         valid_metric = compute_strong_metrics(predictions, valid_synth_df)
+        
         #attention
+        LOG.info("Strong metric on Validation synthetic results Attention network's output")
         att_valid_metric = compute_strong_metrics(att_predictions, valid_synth_df)
+        
+        
+        LOG.info("Audio tagging results on validation Synthetic data:\n {}".format(audio_tagging_results(valid_synth_df, att_predictions)))
+
+
 
         state['model']['state_dict'] = sacnn.state_dict()
         state['optimizer']['state_dict'] = optimizer.state_dict()
@@ -346,9 +377,13 @@ if __name__ == '__main__':
             print("Saving this model: {}".format(model_fname))
 
         if cfg.save_best:
-            global_valid = valid_metric.results_class_wise_average_metrics()['f_measure']['f_measure']
-            if use_weak:
-                global_valid += np.mean(weak_metric)
+            global_valid = att_valid_metric.results_class_wise_average_metrics()['f_measure']['f_measure']
+            #global_valid = valid_metric.results_class_wise_average_metrics()['f_measure']['f_measure']
+               
+            #Questionable addition
+            #if use_weak and use_synthetic:
+            #    global_valid += np.mean(weak_metric)
+            
             if save_best_cb.apply(global_valid):
                 model_fname = os.path.join(saved_model_dir, "baseline_best")
                 torch.save(state, model_fname)
