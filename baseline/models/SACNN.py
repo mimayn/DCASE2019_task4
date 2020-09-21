@@ -121,7 +121,7 @@ class CNN(nn.Module):
         x = self.conv_block3(x, pool_size = self.pool_size[2], pool_type=self.pool_type)
         tf_maps = self.conv_block4(x, pool_size= self.pool_size[3], pool_type=self.pool_type)
         '''Time-frequency maps: (batch_size, channels_num, times_steps, freq_bins)'''
-        pause()
+        
         (framewise_vector, _) = torch.max(tf_maps, dim=3)
         '''(batch_size, feature_maps, frames_num)'''
         
@@ -185,15 +185,17 @@ class SACNN(nn.Module):
     def forward(self, x):
         '''
         Input: (batch_size, times_steps, freq_bins)'''
-        #pause()
+        #x = torch.randn(1,1,864,64).cuda()
         
-
         interpolate_ratio = 8
         in_shape = x.shape
         if len(x.size())==5:
             x = x.permute(0,4,1,2,3)
             x = x.contiguous().view(-1,in_shape[1],in_shape[2],in_shape[3])
-        aug_dim = in_shape[-1]    
+            perturb_dim = in_shape[-1]
+        else:
+            perturb_dim=1
+            #no perturbation in data        
         #x = input[:, None, :, :]
         '''(batch_size, 1, times_steps, freq_bins)'''
 
@@ -204,10 +206,12 @@ class SACNN(nn.Module):
         '''Time-frequency maps: (batch_size, channels_num, times_steps, freq_bins)'''
         
 
-        tf_maps, tf_att = self.cbam(tf_maps, aug_dim)
+        tf_maps, tf_att = self.cbam(tf_maps, perturb_dim)
         #tf_maps : (batch_size, feature_maps, time_steps, frq_bins, nclass)
-
+            
         #tf_att : (batch_size, augment_dim, feature_maps, time_steps, frq_bins, nclass))
+        
+        t_att = tf_att.max(axis=4)
 
         (framewise_vector, _) = torch.max(tf_maps, dim=3)
         '''(batch_size, feature_maps, frames_num)'''
@@ -215,7 +219,8 @@ class SACNN(nn.Module):
         framewise_output = torch.sigmoid(self.fc(framewise_vector.permute([0,3,2,1])))
         #framewise_output = interpolate(framewise_output, interpolate_ratio)
         '''(batch_size, classes_num, frames_num, 1)'''
-        framewise_output = framewise_output.squeeze().permute([0,2,1])
+
+        framewise_output = framewise_output.squeeze(-1).permute([0,2,1])
         #(batch_size, frames_num, classes_num)  
 
         # Clipwise prediction
@@ -230,7 +235,7 @@ class SACNN(nn.Module):
         #    clipwise_output = torch.sigmoid(self.fc(aggregation))
         #(aggregation, _) = torch.max(framewise_vector, dim=2)
         #clipwise_output = torch.sigmoid(self.fc(aggregation))    
-        return framewise_output, clipwise_output, tf_att
+        return framewise_output, clipwise_output, t_att[0]
 
 
 

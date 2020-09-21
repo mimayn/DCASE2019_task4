@@ -10,11 +10,11 @@ import sed_eval
 import numpy as np
 import pandas as pd
 import torch
-
+from tqdm import tqdm
 import config as cfg
 from utils.Logger import LOG
 from utils.utils import ManyHotEncoder, to_cuda_if_available
-
+from pdb import set_trace as pause
 
 def get_f_measure_by_class(torch_model, nb_tags, dataloader_, thresholds_=None):
     """ get f measure for each class given a model and a generator of data (batch_x, y)
@@ -41,7 +41,7 @@ def get_f_measure_by_class(torch_model, nb_tags, dataloader_, thresholds_=None):
         if torch.cuda.is_available():
             batch_x = batch_x.cuda()
 
-        pred_strong, pred_weak = torch_model(batch_x)
+        pred_strong, pred_weak, att_map = torch_model(batch_x)
         pred_weak = pred_weak.cpu().data.numpy()
         labels = y.numpy()
 
@@ -201,14 +201,18 @@ def macro_f_measure(tp, fp, fn):
 
 
 def get_predictions(model, valid_dataset, decoder, pooling_time_ratio=1, save_predictions=None):
-    for i, (input, _) in enumerate(valid_dataset):
+    for i, (input, _) in tqdm(enumerate(valid_dataset),total =len(valid_dataset)):
         [input] = to_cuda_if_available([input])
 
-        pred_strong, _ = model(input.unsqueeze(0))
+        pred_strong, _, att_map = model(input.unsqueeze(0))
+
+# -------------- prediction from the end of the network --------------------
         pred_strong = pred_strong.cpu()
         pred_strong = pred_strong.squeeze(0).detach().numpy()
+        
         if i == 0:
             LOG.debug(pred_strong)
+
         pred_strong = ProbabilityEncoder().binarization(pred_strong, binarization_type="global_threshold",
                                                         threshold=0.5)
         pred_strong = scipy.ndimage.filters.median_filter(pred_strong, (cfg.median_window, 1))
@@ -216,19 +220,54 @@ def get_predictions(model, valid_dataset, decoder, pooling_time_ratio=1, save_pr
         pred = pd.DataFrame(pred, columns=["event_label", "onset", "offset"])
         pred["filename"] = valid_dataset.filenames.iloc[i]
         if i == 0:
+            LOG.debug("Explicit preditions from the End of the network:")
             LOG.debug("predictions: \n{}".format(pred))
             LOG.debug("predictions strong: \n{}".format(pred_strong))
             prediction_df = pred.copy()
         else:
             prediction_df = prediction_df.append(pred)
 
-    # In seconds
+# -------------Processing implicit predictions from the attention network ------
+        
+        att_pred_strong = att_map[:,0,:,:,:].squeeze() #implicit strong predictions through the attention network         
+        
+        att_pred_strong = att_pred_strong.cpu()
+        att_pred_strong = att_pred_strong.squeeze(0).detach().numpy()
+        
+        if i == 0:
+            LOG.debug(att_pred_strong)
+        #raw_att_pred_strong = att_strong_pred    
+        
+        att_pred_strong = ProbabilityEncoder().binarization(att_pred_strong, binarization_type="global_threshold",
+                                                        threshold=0.5)    
+        #att_pred_strong = scipy.ndimage.filters.median_filter(att_pred_strong, (cfg.median_window, 1))
+        att_pred = decoder(att_pred_strong)
+        att_pred = pd.DataFrame(att_pred, columns=["event_label", "onset", "offset"])
+        att_pred["filename"] = valid_dataset.filenames.iloc[i]
+        if i == 0:
+            LOG.debug("Implicit preditions from the Attention network:")
+            LOG.debug("predictions: \n{}".format(att_pred))
+            LOG.debug("predictions strong: \n{}".format(att_pred_strong))
+            att_prediction_df = att_pred.copy()
+        else:
+            att_prediction_df = att_prediction_df.append(att_pred)    
+# ------------------------------------------------------------------------ 
+
+        # In seconds
     prediction_df.onset = prediction_df.onset * pooling_time_ratio / (cfg.sample_rate / cfg.hop_length)
     prediction_df.offset = prediction_df.offset * pooling_time_ratio / (cfg.sample_rate / cfg.hop_length)
     if save_predictions is not None:
         LOG.info("Saving predictions at: {}".format(save_predictions))
-        prediction_df.to_csv(save_predictions, index=False, sep="\t")
-    return prediction_df
+        prediction_df.to_csv(save_predictions, index=False, sep="\t")        
+    # In seconds
+    att_prediction_df.onset = att_prediction_df.onset * pooling_time_ratio / (cfg.sample_rate / cfg.hop_length)
+    att_prediction_df.offset = att_prediction_df.offset * pooling_time_ratio / (cfg.sample_rate / cfg.hop_length)
+    if save_predictions is not None:
+        att_save_predictions = save_predictions[:-4]+'_att.tsv' 
+        LOG.info("Saving attention predictions at: {}".format(att_save_predictions))
+        prediction_df.to_csv(att_save_predictions, index=False, sep="\t")
+   
+    return prediction_df, att_prediction_df
 
 
 def compute_strong_metrics(predictions, valid_df, pooling_time_ratio=None):

@@ -81,7 +81,7 @@ class ChannelGate(nn.Module):
             else:
                 channel_att_sum = channel_att_sum + channel_att_raw
 
-        scale = F.sigmoid( channel_att_sum ).unsqueeze(2).unsqueeze(3).expand_as(x)
+        scale = torch.sigmoid( channel_att_sum ).unsqueeze(2).unsqueeze(3).expand_as(x)
         return x * scale
 
 def logsumexp_2d(tensor):
@@ -103,7 +103,7 @@ class SpatialGate(nn.Module):
     def forward(self, x):
         x_compress = self.compress(x)
         x_out = self.spatial(x_compress)
-        scale = F.sigmoid(x_out) # broadcasting
+        scale = torch.sigmoid(x_out) # broadcasting
         return scale
 
 class CBAM(nn.Module):
@@ -114,22 +114,27 @@ class CBAM(nn.Module):
         
         if not no_spatial:
             self.SpatialGate = SpatialGate()
-    def forward(self, x, aug_dim):
-
+    def forward(self, x, perturb_dim):
+        #pause()
         x_out = self.ChannelGate(x)
         
         if not self.no_spatial:
             sp_att = self.SpatialGate(x_out)
        
-        batch_aug,ch,tm,fr = x_out.shape 
+        batch_ptb,ch,tm,fr = x_out.shape 
         
-        x_out = x_out.view(int(batch_aug/aug_dim),aug_dim,ch,tm,fr).unsqueeze(-1)
+        if perturb_dim > 0:
 
-        sp_att = sp_att.view(int(batch_aug/aug_dim),aug_dim,10,tm,fr).unsqueeze(-1).permute(0,1,-1,3,4,2)
+        	x_out = x_out.view(int(batch_ptb/perturb_dim),perturb_dim,ch,tm,fr).unsqueeze(-1)
 
-        x_out = x_out[:,0,:,:,:]
-        mean_att = torch.mean(sp_att,axis=1)
+        	sp_att = sp_att.view(int(batch_ptb/perturb_dim),perturb_dim,10,tm,fr).unsqueeze(-1).permute(0,1,-1,3,4,2)
+
+        	x_out = x_out[:,0,:,:,:]
+        
+        	mean_att = torch.mean(sp_att,axis=1)
   
-        r= x_out*mean_att
-
-        return r, sp_att
+        	return x_out*mean_att, sp_att
+        #else: 
+        #	sp_att = sp_att.unsqueeze(-1).permute(0,-1,2,3,1)
+       	# 	return x_out.unsqueeze(-1)*sp_att, sp_att		
+        

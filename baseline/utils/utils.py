@@ -16,7 +16,7 @@ import torch
 from torch import nn
 from dcase_util.data import DecisionEncoder
 
-from DataLoad import AugmentSprinkleMask, AugmentGaussianNoise, ApplyLog, PadOrTrunc, ToTensor, Normalize, Compose
+from DataLoad import AddSprinkleMaskPerturbation, AugmentGaussianNoise, ApplyLog, PadOrTrunc, ToTensor, Normalize, Compose
 
 
 class ManyHotEncoder:
@@ -394,19 +394,19 @@ class AverageMeter:
         return "{self.avg:{format}}".format(self=self, format=format)
 
 
-def get_transforms(frames, scaler=None, add_axis_conv=True, augment_type=None, n_aug=5):
+def get_transforms(frames, scaler=None, add_axis_conv=True, perturb_type=None, n_perturb=5):
     transf = []
     unsqueeze_axis = None
     if add_axis_conv:
         unsqueeze_axis = 0
 
     # Todo, add other augmentations
-    if augment_type is not None:
-        if augment_type == "noise":
+    if perturb_type is not None:
+        if perturb_type == "noise":
             transf.append(AugmentGaussianNoise(mean=0., std=0.5))
 
-        if augment_type == "random_mask":
-            transf.append(AugmentSprinkleMask(n_aug=n_aug, aug_type='random_mask',frac=0.25))        
+        if perturb_type == "random_mask":
+            transf.append(AddSprinkleMaskPerturbation(n_perturb=n_perturb, perturb_type='random_mask',frac=0.25))        
 
     transf.extend([ApplyLog(), PadOrTrunc(nb_frames=frames),  ToTensor(unsqueeze_axis=unsqueeze_axis)])
     if scaler is not None:

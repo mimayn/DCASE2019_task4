@@ -271,7 +271,7 @@ if __name__ == '__main__':
     eval_2018_df = dataset.initialize_and_get_df(cfg.eval2018, reduced_number_of_data)
     eval_2018 = DataLoadDf(eval_2018_df, dataset.get_feature_file, many_hot_encoder.encode_strong_df,
                            transform=transforms_valid)
-
+    
     # ##############
     # Model
     # ##############

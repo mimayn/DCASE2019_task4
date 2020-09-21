@@ -20,6 +20,7 @@ from utils.Logger import LOG
 from utils.Scaler import Scaler
 from models.CRNN import CRNN
 from models.SACNN import CNN
+from models.SACNN import SACNN
 import config as cfg
 
 from pdb import set_trace as pause
@@ -57,9 +58,10 @@ def test_model(model, state, reference_tsv_path, reduced_number_of_data=None, st
     strong_dataload = DataLoadDf(df, ref_wav_dir, feature_retrieval_func, many_hot_encoder.encode_strong_df,
                                  transform=transforms_valid)
 
-    predictions = get_predictions(model_nn, strong_dataload, many_hot_encoder.decode_strong, pooling_time_ratio,
+    predictions, att_predictions = get_predictions(model_nn, strong_dataload, many_hot_encoder.decode_strong, pooling_time_ratio,
                                   save_predictions=store_predicitions_fname)
-    compute_strong_metrics(predictions, df)
+    
+    compute_strong_metrics(att_predictions, df)
 
     weak_dataload = DataLoadDf(df, ref_wav_dir, feature_retrieval_func, many_hot_encoder.encode_weak,
                                transform=transforms_valid)
@@ -91,6 +93,8 @@ if __name__ == '__main__':
         model = CRNN 
     elif (f_args.model_name.lower() == 'cnn'):
         model = CNN
+    elif (f_args.model_name.lower() == 'sacnn'):
+        model = SACNN
     else:
         raise NotImplementedError("Model not found, please use of one of implemented models")
 

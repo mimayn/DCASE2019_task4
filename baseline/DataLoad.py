@@ -339,25 +339,33 @@ class AugmentGaussianNoise:
         return sample, noise, label
 
 
-class AugmentSprinkleMask:
-    """ Pad or truncate a sequence given a number of frames
+class AddSprinkleMaskPerturbation:
+    """ create a perturbation of an original T-F representation (mel-spectrogram)
+        by randomly setting a fraction of the T-F values to zero. A given number of 
+        independently generated number of these perturbation are stacked on top of 
+        each other, concatenated with the original T-F image and returned as ouput  
            Args:
-               mean: float, mean of the Gaussian noise to add
+               n_perturb: number of perturbations to create
+               perturb_type : kinf of perturbation, currently only "random_mask"
+               frac = fraction of pixels in the input representation to be distorted
            Attributes:
-               std: float, std of the Gaussian noise to add
+               stack_perturbations: stack all the perturbed input images along the depth of 
+                        the input representation and concatenate with the original input 
+                        representation
+                
            """
-    def __init__(self, n_aug=5, aug_type='random_mask',frac=0.25):
-        self.n_aug = n_aug
-        self.aug_type = aug_type
+    def __init__(self, n_perturb=5, perturb_type='random_mask',frac=0.25):
+        self.n_perturb = n_perturb
+        self.perturb_type = perturb_type
         self.frac = frac
 
     
-    def stack_augmentations(self, features,n_aug=5,aug_type='random_mask',frac=.25):
+    def stack_perturbations(self, features,n_perturb=5,perturb_type='random_mask',frac=.25):
 
-        if aug_type == 'random_mask':
+        if perturb_type == 'random_mask':
 
-            masks = self.create_masks(features,n_aug,frac=self.frac)
-            masked_specs = (np.tile(features,(n_aug,1,1))*masks).transpose(1,2,0)
+            masks = self.create_masks(features,n_perturb,frac=self.frac)
+            masked_specs = (np.tile(features,(n_perturb,1,1))*masks).transpose(1,2,0)
             return np.concatenate((np.expand_dims(features,axis=2),masked_specs),axis=2)
 
             
@@ -383,7 +391,7 @@ class AugmentSprinkleMask:
         """
         feat, label = sample
 
-        sample = self.stack_augmentations(feat, self.n_aug, self.aug_type, self.frac)
+        sample = self.stack_perturbations(feat, self.n_perturb, self.perturb_type, self.frac)
 
         return sample, label
 

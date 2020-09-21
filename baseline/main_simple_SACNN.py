@@ -28,7 +28,7 @@ import config as cfg
 from utils.utils import ManyHotEncoder, AverageMeterSet, create_folder, SaveBest, to_cuda_if_available, weights_init, \
     get_transforms
 from utils.Logger import LOG
-
+import losses
 
 def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=None):
     class_criterion = nn.BCELoss()
@@ -44,6 +44,8 @@ def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=Non
         LOG.debug(batch_input.mean())
 
         strong_pred, weak_pred, att_map = model(batch_input)
+        att_strong_pred = att_map[:,0,:,:,:].squeeze() 
+        
         loss = 0
         if weak_mask is not None:
             # Weak BCE Loss
@@ -64,15 +66,29 @@ def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=Non
             strong_class_loss = class_criterion(strong_pred[strong_mask], target[strong_mask])
             meters.update('Strong loss', strong_class_loss.item())
 
-            loss += strong_class_loss
+            #evaluation of temporal attention maps as alternative predictions
+            att_strong_class_loss = class_criterion(att_strong_pred[strong_mask], target[strong_mask])
+            meters.update('Attention Map Strong loss', att_strong_class_loss.item())
 
-        #add synchrony loss
-        #loss+=
+            loss += strong_class_loss
         
-        #add total-variation loss
-        #loss+=
-        #add Binarization loss
-        #loss+=
+        # asynchrony loss
+        asyn_loss = losses.asynchrony_loss(att_map, asyn_measure='mse-all', asyn_lambda=cfg.asyn_loss_lambda) 
+        
+        #total-variation loss
+        tv_loss = losses.TV_loss(att_map, tv_lambda=cfg.tv_loss_lambda)
+        
+        # Binarization loss
+        bin_loss = losses.binarization_loss(att_map, bin_lambda=cfg.bin_loss_lambda)
+        
+
+        meters.update('asynchrony loss', asyn_loss.item())
+        meters.update('Total Variation loss', tv_loss.item())
+        meters.update('Binarization loss', bin_loss.item())
+
+
+
+        loss += asyn_loss + tv_loss + bin_loss
         
         assert not (np.isnan(loss.item()) or loss.item() > 1e5), 'Loss explosion: {}'.format(loss.item())
         assert not loss.item() < 0, 'Loss problem, cannot be negative'
@@ -93,24 +109,34 @@ def train(train_loader, model, optimizer, epoch, weak_mask=None, strong_mask=Non
 
 
 if __name__ == '__main__':
-    LOG.info("Simple SACNNs")
     parser = argparse.ArgumentParser(description="")
     parser.add_argument("-s", '--subpart_data', type=int, default=None, dest="subpart_data",
                         help="Number of files to be used. Useful when testing on small number of files.")
-    parser.add_argument("-n", '--no_weak', dest='no_weak', action='store_true', default=False,
-                        help="Not using weak labels during training")
     f_args = parser.parse_args()
 
     reduced_number_of_data = f_args.subpart_data
-    no_weak = f_args.no_weak
-    LOG.info("subpart_data = {}".format(reduced_number_of_data))
-    LOG.info("Using_weak labels : {}".format(not no_weak))
+    
+    use_weak = cfg.use_weak
+    use_synthetic = cfg.use_synthetic
+    
 
-    if not no_weak:
-        add_dir_path = "_with_weak"
+
+    if use_weak and use_synthetic:
+        add_dir_path = "_synthetic_and_weak"
+         
+    elif use_weak:
+        add_dir_path = "_weak_only"
+        
+    elif use_synthetic:
+        add_dir_path = "_synthetic_only"    
+
+    if cfg.add_perturbations:
+        perturb_type = 'random_mask'
+        add_dir_path += "_{}_pertubations".format(cfg.n_perturb) 
     else:
-        add_dir_path = "_synthetic_only"
+        perturb_type = None
 
+           
     store_dir = os.path.join("stored_data", "simple_SACNN" + add_dir_path)
     saved_model_dir = os.path.join(store_dir, "model")
     saved_pred_dir = os.path.join(store_dir, "predictions")
@@ -118,6 +144,12 @@ if __name__ == '__main__':
     create_folder(saved_model_dir)
     create_folder(saved_pred_dir)
 
+    logger_path = os.path.join(store_dir,"SACNN.log")    
+    #LOG = create_logger("SACNN", )    
+    LOG.info("Simple SACNNs")
+    LOG.info("subpart_data = {}".format(reduced_number_of_data))
+   
+    LOG.info("Dataset compositions : weak data:{}  Synthetic_data:{}".format(use_weak, use_synthetic))
     # ##############
     # Model
     # ##############
@@ -181,13 +213,16 @@ if __name__ == '__main__':
                                   many_hot_encoder.encode_strong_df,
                                   transform=transforms)
 
-    if not no_weak:
+    if use_weak and use_synthetic:
         list_datasets = [train_weak_data, train_synth_data]
         training_data = ConcatDataset(list_datasets)
-    else:
+    elif use_weak:
+        list_datasets = [train_weak_data]
+        training_data = train_weak_data
+    elif use_synthetic:
         list_datasets = [train_synth_data]
         training_data = train_synth_data
-
+        
     scaler = Scaler()
     scaler.calculate_scaler(training_data)
     LOG.debug(scaler.mean_)
@@ -196,15 +231,13 @@ if __name__ == '__main__':
     # Validation dataset is only used to get an idea of wha could be results on evaluation dataset
     validation_dataset = DataLoadDf(validation_df, validation_wav_dir, feature_retrieval_func, many_hot_encoder.encode_strong_df,
                                     transform=transforms_valid)
-    if cfg.augment:
-        augment_type = 'random_mask'
-    else:
-        augment_type = None
 
-    transforms = get_transforms(cfg.max_frames, augment_type = augment_type, n_aug = cfg.n_aug, scaler=scaler)
+    
+    transforms = get_transforms(cfg.max_frames, perturb_type = perturb_type, n_perturb = cfg.n_perturb, scaler=scaler)
     train_synth_data.set_transform(transforms)
-    if not no_weak:
-        train_weak_data.set_transform(transforms)
+    train_weak_data.set_transform(transforms)
+    if use_weak and use_synthetic:
+        
         concat_dataset = ConcatDataset([train_weak_data, train_synth_data])
         # Taking as much data from synthetic than strong.
         sampler = MultiStreamBatchSampler(concat_dataset,
@@ -214,10 +247,16 @@ if __name__ == '__main__':
                                      transform=transforms_valid)
         weak_mask = slice(cfg.batch_size // 2)
         strong_mask = slice(cfg.batch_size // 2, cfg.batch_size)
-    else:
+    elif use_synthetic:
         training_data = DataLoader(train_synth_data, batch_size=cfg.batch_size)
         strong_mask = slice(cfg.batch_size)  # Not masking
         weak_mask = None
+    elif use_weak:
+        training_data = DataLoader(train_weak_data, batch_size=cfg.batch_size)
+        valid_weak_data = DataLoadDf(valid_weak_df, weak_wav_dir, feature_retrieval_func, many_hot_encoder.encode_strong_df,
+                                     transform=transforms_valid)
+        strong_mask = None  
+        weak_mask = slice(cfg.batch_size)  
 
     valid_synth_data = DataLoadDf(valid_synth_df, synthetic_wav_dir, feature_retrieval_func, many_hot_encoder.encode_strong_df,
                                   transform=transforms_valid)
@@ -259,11 +298,19 @@ if __name__ == '__main__':
 
         sacnn = sacnn.eval()
         LOG.info("Training synthetic metric:")
-        train_predictions = get_predictions(sacnn, train_synth_data, many_hot_encoder.decode_strong, pooling_time_ratio,
-                                            save_predictions=None)
-        train_metric = compute_strong_metrics(train_predictions, train_synth_df)
+        
+        if use_synthetic:
+            train_predictions,train_att_predictions = get_predictions(sacnn, train_synth_data, many_hot_encoder.decode_strong, pooling_time_ratio,
+                                                save_predictions=None)
+            pause()
+            #train metrics using networks final explicit predictions
+            train_metric = compute_strong_metrics(train_predictions, train_synth_df)
 
-        if not no_weak:
+            #train metrics using attention network predictions
+            att_train_metric = compute_strong_metrics(train_att_predictions, train_synth_df)
+
+
+        if use_weak:
             LOG.info("Training weak metric:")
             weak_metric = get_f_measure_by_class(sacnn, len(classes),
                                                  DataLoader(train_weak_data, batch_size=cfg.batch_size))
@@ -278,14 +325,21 @@ if __name__ == '__main__':
                 "Weak F1-score per class: \n {}".format(pd.DataFrame(weak_metric * 100, many_hot_encoder.labels)))
             LOG.info("Weak F1-score macro averaged: {}".format(np.mean(weak_metric)))
 
+        
         LOG.info("Valid synthetic metric:")
-        predictions = get_predictions(sacnn, valid_synth_data, many_hot_encoder.decode_strong, pooling_time_ratio)
+
+        predictions, att_predictions = get_predictions(sacnn, valid_synth_data, many_hot_encoder.decode_strong, pooling_time_ratio)
+        
         valid_metric = compute_strong_metrics(predictions, valid_synth_df)
+        #attention
+        att_valid_metric = compute_strong_metrics(att_predictions, valid_synth_df)
 
         state['model']['state_dict'] = sacnn.state_dict()
         state['optimizer']['state_dict'] = optimizer.state_dict()
         state['epoch'] = epoch
         state['valid_metric'] = valid_metric.results()
+        state['att_valid_metric'] = att_valid_metric.results()
+
         if cfg.checkpoint_epochs is not None and (epoch + 1) % cfg.checkpoint_epochs == 0:
             model_fname = os.path.join(saved_model_dir, "baseline_epoch_" + str(epoch))
             torch.save(state, model_fname)
@@ -293,7 +347,7 @@ if __name__ == '__main__':
 
         if cfg.save_best:
             global_valid = valid_metric.results_class_wise_average_metrics()['f_measure']['f_measure']
-            if not no_weak:
+            if use_weak:
                 global_valid += np.mean(weak_metric)
             if save_best_cb.apply(global_valid):
                 model_fname = os.path.join(saved_model_dir, "baseline_best")
@@ -309,11 +363,11 @@ if __name__ == '__main__':
     # ##############
     # Validation
     # ##############
-    predicitons_fname = os.path.join(saved_pred_dir, "baseline_validation.tsv")
+    predicitons_fname = os.path.join(saved_pred_dir, "sacnn_validation.tsv")
     test_model(SACNN, state, cfg.validation, reduced_number_of_data, predicitons_fname)
 
     # ##############
     # Evaluation
     # ##############
-    predicitons_eval2019_fname = os.path.join(saved_pred_dir, "baseline_eval2019.tsv")
+    predicitons_eval2019_fname = os.path.join(saved_pred_dir, "sacnn_eval2019.tsv")
     test_model(SACNN,state, cfg.eval_desed, reduced_number_of_data, predicitons_eval2019_fname)

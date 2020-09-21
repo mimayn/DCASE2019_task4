@@ -12,6 +12,13 @@ test2018 = 'dataset/metadata/validation/test_dcase2018.tsv'
 eval2018 = 'dataset/metadata/validation/eval_dcase2018.tsv'
 eval_desed = "dataset/metadata/eval/public.tsv"
 
+
+#dataset_composition = ['weak', 'synthetic']
+use_weak = True
+use_synthetic = False
+
+use_synthetic_as_weak = True
+
 # config
 # prepare_data
 sample_rate = 44100
@@ -37,9 +44,9 @@ max_consistency_cost = 2
 max_learning_rate = 0.001
 
 
-tv_loss_lambda = 0
-Syn_loss_lambda = 0
-
+tv_loss_lambda = 2
+asyn_loss_lambda = .7
+bin_loss_lambda = .7
 
 median_window = 5
 
@@ -47,11 +54,12 @@ online_feature_extraction = False
 
 # Main
 num_workers = 12
-batch_size = 4
-n_epoch = 2
+batch_size = 2
+n_epoch = 50
 
-augment = True
-n_aug =1
+
+add_perturbations = True
+n_perturb =5
 
 checkpoint_epochs = 1
 
@@ -80,3 +88,5 @@ sacnn_kwargs = {"n_in_channel": 1, "nclass": len(classes), "attention": False,
                 "dropout": 0.5, "dilation" : 4*[(1,1)],
                "kernel_size": 4 * [(3,3)], "pad": 4 * [(1,1)], "stride": 4 * [(1,1)], "nb_filters": [64, 128, 256, 512],
                 "pool_size": 3*[(2,2)] + [(1,1)], 'pool_type': "max"}
+
+model_name= 'sacnn'
