@@ -107,9 +107,9 @@ class DataLoadDf(Dataset):
             tuple
             Tuple containing the features and the labels (numpy.array, numpy.array)
                 """
-        #pause()
+        
         if self.get_feature_file_func is not None:
-            features = self.get_feature_file_func(self.filenames.iloc[index])
+            features, fname = self.get_feature_file_func(self.filenames.iloc[index])
         else:
             features = self.get_features_from_wav(self.filenames.iloc[index],self.wav_dir)    
         
@@ -154,8 +154,7 @@ class DataLoadDf(Dataset):
         else:
             y = label
         sample = features, y
-        
-        return sample
+        return sample, fname
 
     def __getitem__(self, index):
         """ Get a sample and transform it to be used in a model, use the transformations
@@ -169,10 +168,11 @@ class DataLoadDf(Dataset):
             Tuple containing the features, the labels and the index (numpy.array, numpy.array, int)
 
         """
-        sample = self.get_sample(index)
+
+        sample, fname = self.get_sample(index)
         
         if self.transform:
-            sample = self.transform(sample)
+            sample = self.transform(sample,fname)
 
         if self.return_indexes:
             sample = (sample, index)
@@ -210,7 +210,7 @@ class GaussianNoise:
         self.mean = mean
         self.std = std
 
-    def __call__(self, sample):
+    def __call__(self, sample, fname):
         """ Apply the transformation
         Args:
             sample: tuple or list, a sample defined by a DataLoad class
@@ -231,7 +231,7 @@ class GaussianNoise:
 class ApplyLog(object):
     """Convert ndarrays in sample to Tensors."""
 
-    def __call__(self, sample):
+    def __call__(self, sample, fname):
         """ Apply the transformation
         Args:
 
@@ -242,11 +242,36 @@ class ApplyLog(object):
             The transformed tuple
         """
         # sample must be a tuple or a list, first parts are input, then last element is label
+        
         if type(sample) is tuple:
             sample = list(sample)
         for i in range(len(sample) - 1):
             sample[i] = librosa.amplitude_to_db(sample[i].T).T
         return sample
+
+
+class ApplySimpleLog(object):
+    """Convert ndarrays in sample to Tensors."""
+
+    def __call__(self, sample, fname):
+        """ Apply the transformation
+        Args:
+
+        sample: tuple, a sample defined by a DataLoad class
+
+        Returns:
+            tuple
+            The transformed tuple
+        """
+        # sample must be a tuple or a list, first parts are input, then last element is label
+        
+        if type(sample) is tuple:
+            sample = list(sample)
+        for i in range(len(sample) - 1):
+            
+            sample[i] = np.log(1+sample[i])
+        return sample
+
 
 
 def pad_trunc_seq(x, max_len):
@@ -292,7 +317,7 @@ class PadOrTrunc:
     def __init__(self, nb_frames):
         self.nb_frames = nb_frames
 
-    def __call__(self, sample):
+    def __call__(self, sample, fname):
         """ Apply the transformation
         Args:
             sample: tuple or list, a sample defined by a DataLoad class
@@ -323,7 +348,7 @@ class AugmentGaussianNoise:
         self.mean = mean
         self.std = std
 
-    def __call__(self, sample):
+    def __call__(self, sample, fname):
         """ Apply the transformation
         Args:
             sample: tuple or list, a sample defined by a DataLoad class
@@ -361,8 +386,9 @@ class AddSprinkleMaskPerturbation:
 
     
     def stack_perturbations(self, features,n_perturb=5,perturb_type='random_mask',frac=.25):
-
-        if perturb_type == 'random_mask':
+        if n_perturb == 0:
+            return np.expand_dims(features,axis=2)
+        elif perturb_type == 'random_mask':
 
             masks = self.create_masks(features,n_perturb,frac=self.frac)
             masked_specs = (np.tile(features,(n_perturb,1,1))*masks).transpose(1,2,0)
@@ -380,7 +406,7 @@ class AddSprinkleMaskPerturbation:
         return masks
 
 
-    def __call__(self, sample):
+    def __call__(self, sample, fname):
         """ Apply the transformation
         Args:
             sample: tuple or list, a sample defined by a DataLoad class
@@ -389,11 +415,195 @@ class AddSprinkleMaskPerturbation:
             list
             The transformed tuple
         """
+        
         feat, label = sample
 
         sample = self.stack_perturbations(feat, self.n_perturb, self.perturb_type, self.frac)
 
         return sample, label
+
+
+class AddRandomFrequencyMasks(object):
+
+    def __init__(self, n_perturb=5, n_masks=2, max_bw=16):
+        
+        self.n_perturb = n_perturb
+        self.n_masks = n_masks
+        self.max_bw = max_bw
+    
+    def stack_masked_specs(self, features):
+        
+        if self.n_perturb == 0:
+            return np.expand_dims(features, axis=2)
+        else:
+
+            T,F = features.shape
+            masked_specs = np.tile(np.expand_dims(features,axis=-1), self.n_perturb+1)
+            for p_idx in range(self.n_perturb):
+                #Frequency masking
+                for i in range(self.n_masks):
+                    bw = np.random.uniform(low=1, high=self.max_bw)
+                    bw = int(bw)
+                    f0 = random.randint(0, F-bw)
+                    masked_specs[:,f0:f0+bw, p_idx+1] = 0
+      
+            return masked_specs
+
+
+    def __call__(self, sample, fname):
+        """ Apply the transformation
+        Args:
+            sample: tuple or list, a sample defined by a DataLoad class
+
+        Returns:
+            list
+            The transformed tuple
+        """
+        
+
+        feat, label = sample
+        
+        sample = self.stack_masked_specs(feat)
+        # import matplotlib.pyplot as plt
+        # plt.subplot(4,1,1);
+        # plt.imshow(np.log(1+sample[:,:,0].T));
+        # plt.subplot(4,1,2);
+        # plt.imshow(np.log(1+sample[:,:,1].T));
+        # plt.subplot(4,1,3);
+        # plt.imshow(np.log(1+sample[:,:,2].T));
+        # plt.subplot(4,1,4);
+        # plt.imshow(np.log(1+sample[:,:,3].T));
+        # plt.show()
+
+        return sample, label  
+
+
+
+
+class AddMixedVersions(object):
+    """ create a perturbation of an original T-F representation (mel-spectrogram)
+        by randomly setting a fraction of the T-F values to zero. A given number of 
+        independently generated number of these perturbation are stacked on top of 
+        each other, concatenated with the original T-F image and returned as ouput  
+           Args:
+               n_perturb: number of perturbations to create
+               perturb_type : kinf of perturbation, currently only "random_mask"
+               frac = fraction of pixels in the input representation to be distorted
+           Attributes:
+               stack_perturbations: stack all the perturbed input images along the depth of 
+                        the input representation and concatenate with the original input 
+                        representation
+                
+           """
+    def __init__(self, n_perturb=5):
+        self.n_perturb = n_perturb
+        
+    
+    def stack_mixtures(self, features, n_perturb, transforms_dir):
+        
+        if n_perturb == 0:
+            return np.expand_dims(features,axis=2)
+        else:
+            file_list = sorted(os.listdir(transforms_dir))
+            indexes = np.random.permutation(len(file_list))[:n_perturb]
+            mixtures = np.zeros((*features.shape, n_perturb+1))
+            mixtures[:,:,0] = features
+            for i in range(n_perturb):
+                fname = os.path.join(transforms_dir, file_list[indexes[i]])
+                mixture = np.load(fname)
+                mixtures[:,:,i+1]= mixture[:features.shape[0],:]
+
+            return mixtures
+
+
+    def __call__(self, sample, fname):
+        """ Apply the transformation
+        Args:
+            sample: tuple or list, a sample defined by a DataLoad class
+
+        Returns:
+            list
+            The transformed tuple
+        """
+        
+        fn = fname.split('/')
+        transforms_dir = os.path.join('/'.join(fn[:-2]),'transforms',fn[-1][:-3]+'wav')
+        feat, label = sample
+
+        sample = self.stack_mixtures(feat, self.n_perturb, transforms_dir)
+
+        # import matplotlib.pyplot as plt
+        # for i in range(4):
+        #     plt.subplot(4,1,i+1)
+        #     plt.imshow(sample[:,:,i].T)
+        # plt.show()    
+
+        return sample, label    
+
+
+class AddRandomTimeShifts(object):
+    """ create a perturbation of an original T-F representation (mel-spectrogram)
+        by randomly setting a fraction of the T-F values to zero. A given number of 
+        independently generated number of these perturbation are stacked on top of 
+        each other, concatenated with the original T-F image and returned as ouput  
+           Args:
+               n_perturb: number of perturbations to create
+               perturb_type : kinf of perturbation, currently only "random_mask"
+               frac = fraction of pixels in the input representation to be distorted
+           Attributes:
+               stack_perturbations: stack all the perturbed input images along the depth of 
+                        the input representation and concatenate with the original input 
+                        representation
+                
+           """
+    def __init__(self, n_perturb=5, mean=100, std=100):
+        
+        self.n_perturb = n_perturb
+        self.shift_mean = mean
+        self.shift_std = std
+    
+    def stack_time_shifts(self, features):
+        
+        if n_perturb == 0:
+            return np.expand_dims(features,axis=2)
+        else:
+                      
+            shifted_specs = np.zeros((*features.shape, n_perturb+1))
+            shifted_specs[:,:,0] = features
+            shifts = np.zeros(n_perturb+1)
+            for i in range(n_perturb):
+                #shift = np.random.               
+                shifted_specs[:,:,i+1]= mixture[:features.shape[0],:]
+
+            return mixtures
+
+
+    def __call__(self, sample, fname):
+        """ Apply the transformation
+        Args:
+            sample: tuple or list, a sample defined by a DataLoad class
+
+        Returns:
+            list
+            The transformed tuple
+        """
+        
+        fn = fname.split('/')
+        transforms_dir = os.path.join('/'.join(fn[:-2]),'transforms',fn[-1][:-3]+'wav')
+        feat, label = sample
+
+        sample = self.stack_mixtures(feat, self.n_perturb, transforms_dir)
+
+        # import matplotlib.pyplot as plt
+        # for i in range(4):
+        #     plt.subplot(4,1,i+1)
+        #     plt.imshow(sample[:,:,i].T)
+        # plt.show()    
+
+        return sample, label    
+
+
+
 
 
 class ToTensor(object):
@@ -408,7 +618,7 @@ class ToTensor(object):
     def __init__(self, unsqueeze_axis=None):
         self.unsqueeze_axis = unsqueeze_axis
 
-    def __call__(self, sample):
+    def __call__(self, sample, fname):
         """ Apply the transformation
         Args:
             sample : tuple or list, a sample defined by a DataLoad class
@@ -417,6 +627,7 @@ class ToTensor(object):
             list
             The transformed tuple
         """
+
         if type(sample) is tuple:
             sample = list(sample)
         # sample must be a tuple or a list, first parts are input, then last element is label
@@ -441,7 +652,7 @@ class Normalize(object):
     def __init__(self, scaler):
         self.scaler = scaler
 
-    def __call__(self, sample):
+    def __call__(self, sample, fname):
         """ Apply the transformation
         Args:
             sample: tuple or list, a sample defined by a DataLoad class
@@ -474,9 +685,9 @@ class Compose(object):
         t.append(transform)
         return Compose(t)
 
-    def __call__(self, audio):
+    def __call__(self, audio, fname):
         for t in self.transforms:
-            audio = t(audio)
+            audio = t(audio, fname)
         return audio
 
     def __repr__(self):

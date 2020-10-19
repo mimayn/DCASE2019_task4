@@ -17,8 +17,12 @@ import config as cfg
 from utils.Logger import LOG
 from utils.utils import create_folder, read_audio
 from download_data import download
-
+import scaper
+from tqdm import tqdm
 from pdb import set_trace as pause
+#from playsound import playsound
+#import sounddevice as sd
+#import soundfile as sf
 
 class DatasetDcase2019Task4:
     """DCASE 2018 task 4 dataset
@@ -87,9 +91,12 @@ class DatasetDcase2019Task4:
         if not self.save_log_feature:
             feature_dir += "_nolog"
 
+        self.transforms_dir = os.path.join(feature_dir, "transforms")
         self.feature_dir = os.path.join(feature_dir, "features")
         # create folder if not exist
         create_folder(self.feature_dir)
+        create_folder(self.transforms_dir)
+
 
     def initialize_and_get_df(self, tsv_path, subpart_data=None, download=True):
         """ Initialize the dataset, extract the features dataframes
@@ -194,7 +201,7 @@ class DatasetDcase2019Task4:
         """
         fname = os.path.join(self.feature_dir, os.path.splitext(filename)[0] + ".npy")
         data = np.load(fname)
-        return data
+        return data, fname
         
     
     # def compute_augmented_features():
@@ -256,35 +263,182 @@ class DatasetDcase2019Task4:
                 the associated wav_filename is Yname_start_end.wav
             subpart_data: int, number of files to extract features from the tsv.
         """
+
         t1 = time.time()
         df_meta = self.get_df_from_meta(tsv_audio, subpart_data)
         LOG.info("{} Total file number: {}".format(tsv_audio, len(df_meta.filename.unique())))
-        
+        wav_dir = self.get_audio_dir_path_from_meta(tsv_audio)
+
         for ind, wav_name in enumerate(df_meta.filename.unique()):
             if ind % 500 == 0:
                 LOG.debug(ind)
-            wav_dir = self.get_audio_dir_path_from_meta(tsv_audio)
             wav_path = os.path.join(wav_dir, wav_name)
             
-            #df_meta.loc[df_meta['filename']==wav_name,'wav_dir']= wav_dir    
-            
+            #df_meta.loc[df_meta['filename']==wav_name,'wav_dir']= wav_dir
+       
             out_filename = os.path.splitext(wav_name)[0] + ".npy"
             out_path = os.path.join(self.feature_dir, out_filename)
-            
+
             if not os.path.exists(out_path):
                 if not os.path.isfile(wav_path):
                     LOG.error("File %s is in the tsv file but the feature is not extracted!" % wav_path)
                     df_meta = df_meta.drop(df_meta[df_meta.filename == wav_name].index)
                 else:
+                    
                     (audio, _) = read_audio(wav_path, cfg.sample_rate)
                     if audio.shape[0] == 0:
                         print("File %s is corrupted!" % wav_path)
                     else:
                         mel_spec = self.calculate_mel_spec(audio)
-                        pause()
+                        
                         np.save(out_path, mel_spec)
 
                     LOG.debug("compute features time: %s" % (time.time() - t1))
 
         
         return df_meta.reset_index(drop=True), wav_dir
+
+    def extract_transformations_from_meta(self, df_meta, tsv_audio,  n_transforms =20, subpart_data=None):
+        """Extract log mel spectrogram features.
+
+        Args:
+            tsv_audio : str, file containing names, durations and labels : (name, start, end, label, label_index)
+                the associated wav_filename is Yname_start_end.wav
+            subpart_data: int, number of files to extract features from the tsv.
+        """
+        tsv_audio = os.path.join(self.local_path, tsv_audio)
+        
+        events_dir = '/media/moab/Samsung_T5/audio-datasets/FSD50k/'
+        all_events = os.listdir(events_dir)
+
+        wav_dir = self.get_audio_dir_path_from_meta(tsv_audio)
+
+        n_soundscapes = n_transforms
+        ref_db = 0
+        duration = 10.0
+
+
+        event_label_list = ['FSD50K.dev_audio']
+
+        min_events = 2
+        max_events = 5
+
+        event_time_dist = 'truncnorm'
+        event_time_mean = 4.0
+        event_time_std = 3.0
+        event_time_min = 0.0
+        event_time_max = 10.0
+
+
+
+
+        source_time_dist = 'const'
+        source_time = 0.0
+
+        event_duration_dist = 'uniform'
+        event_duration_min = 0.5
+        event_duration_max = 5.0
+
+        snr_dist = 'uniform'
+        snr_min = -3 
+        snr_max = 1
+
+        pitch_dist = 'uniform'
+        pitch_min = -3.0
+        pitch_max = 3.0
+
+        time_stretch_dist = 'uniform'
+        time_stretch_min = .9
+        time_stretch_max = 1.1
+
+        events_df_path = '/media/moab/Samsung_T5/audio-datasets/FSD50k/FSD50K.ground_truth/eligible_dev.csv'
+        events_df = pd.read_csv(events_df_path)
+        #filtering FSD50k events by length or number of occuring events in a file...
+        events_df = events_df.loc[(events_df['length']<=3)]
+
+        events_root_dir = os.path.join(events_dir, event_label_list[0] )
+        event_src_files = events_df.fname.apply(lambda s: os.path.join(events_root_dir ,str(s) + '.wav')).values.tolist()
+        # generate a random seed for this Scaper object
+        
+        # create a scaper that will be used below
+        bg_folder = "/".join(wav_dir.split('/')[:-1])
+        sc = scaper.Scaper(duration, events_dir, bg_folder)
+
+        sc.ref_db = ref_db
+        
+        t1 = time.time()
+        #df_meta = self.get_df_from_meta(tsv_audio, subpart_data)
+        
+        LOG.info("{} Total file number: {}".format(tsv_audio, len(df_meta.filename.unique())))
+        
+        filenames = df_meta.filename.unique()
+        for ind, wav_name in tqdm(enumerate(filenames), total = len(filenames)):
+            if ind % 500 == 0:
+                LOG.debug(ind)
+            
+            
+            wav_path = os.path.join(wav_dir, wav_name)
+                       
+            out_dir = os.path.join(self.transforms_dir, wav_name)
+
+            if not os.path.exists(out_dir):
+                if not os.path.isfile(wav_path):
+                    LOG.error("File %s is in the tsv file but the feature is not extracted!" % wav_path)
+                    df_meta = df_meta.drop(df_meta[df_meta.filename == wav_name].index)
+                else:
+                    #(audio, _) = read_audio(wav_path, cfg.sample_rate)
+                    #if audio.shape[0] == 0:
+                    #    print("File %s is corrupted!" % wav_path)
+                    #else:
+                    create_folder(out_dir)
+                    #pause()
+                    for t in range(n_transforms):
+                    
+                        # reset the event specifications for foreground and background at the
+                        # beginning of each loop to clear all previously added events
+                        sc.reset_bg_event_spec()
+                        sc.reset_fg_event_spec()
+
+                        # add background
+                        sc.add_background(label=('const', wav_dir.split('/')[-1]),
+                                          source_file=('const', wav_path),
+                                          source_time=('const', 0))
+                        
+                        # add random number of foreground events
+                        n_events = np.random.randint(min_events, max_events+1)
+                        for _ in range(n_events):
+                            sc.add_event(label=('choose', event_label_list),
+                                         source_file=('choose', event_src_files),
+                                         source_time=(source_time_dist, source_time),
+                                         #event_time=(event_time_dist, event_time_mean, event_time_std, event_time_min, event_time_max),
+                                         event_time=(event_time_dist, event_time_min, event_time_max),
+                                         event_duration=(event_duration_dist, event_duration_min, event_duration_max),
+                                         snr=(snr_dist, snr_min, snr_max),
+                                         pitch_shift=(pitch_dist, pitch_min, pitch_max),
+                                         time_stretch=(time_stretch_dist, time_stretch_min, time_stretch_max))
+
+                          
+                        #audio,_,_,_     
+                        audio,_,_,_ = sc.generate(audio_path=None, jams_path=None, allow_repeated_label=True,
+                                    allow_repeated_source=False,
+                                    reverb=0.1,
+                                    peak_normalization=True,
+                                    #disable_sox_warnings=True,
+                                    no_audio=False
+                                    )
+                        
+
+                        if len(audio.shape) > 1:
+                           audio = audio[:,0]     
+
+                        mel_spec = self.calculate_mel_spec(audio)
+                        
+                        out_filename = os.path.splitext(wav_name)[0] + '_v{}'.format(t)+ ".npy"
+                        out_path = os.path.join(out_dir, out_filename)
+                        np.save(out_path, mel_spec)
+
+                    #LOG.debug("compute features time: %s" % (time.time() - t1))
+
+        
+        return 
+

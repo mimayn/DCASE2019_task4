@@ -3,138 +3,158 @@ import math
 import torch.nn as nn
 import torch.nn.functional as F
 from pdb import set_trace as pause
+global sigmoid_slope
 
+sigmoid_slope=1
 
 def init_layer(layer, nonlinearity='leaky_relu'):
-    """Initialize a Linear or Convolutional layer. """
-    nn.init.kaiming_uniform_(layer.weight, nonlinearity=nonlinearity)
+	"""Initialize a Linear or Convolutional layer. """
+	nn.init.kaiming_uniform_(layer.weight, nonlinearity=nonlinearity)
 
-    if hasattr(layer, 'bias'):
-        if layer.bias is not None:
-            layer.bias.data.fill_(0.)
-    
-    
+	if hasattr(layer, 'bias'):
+		if layer.bias is not None:
+			layer.bias.data.fill_(0.)
+	
+	
 def init_bn(bn):
-    """Initialize a Batchnorm layer. """
-    
-    bn.bias.data.fill_(0.)
-    bn.running_mean.data.fill_(0.)
-    bn.weight.data.fill_(1.)
-    bn.running_var.data.fill_(1.)
+	"""Initialize a Batchnorm layer. """
+	
+	bn.bias.data.fill_(0.)
+	bn.running_mean.data.fill_(0.)
+	bn.weight.data.fill_(1.)
+	bn.running_var.data.fill_(1.)
 
 class BasicConv(nn.Module):
-    def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False):
-        super(BasicConv, self).__init__()
-        self.out_channels = out_planes
-        self.conv = nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
-        self.bn = nn.BatchNorm2d(out_planes,eps=1e-5, momentum=0.01, affine=True) if bn else None
-        self.relu = nn.ReLU() if relu else None
-        self.init_weights()
+	def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1, relu=True, bn=True, bias=False):
+		super(BasicConv, self).__init__()
+		self.out_channels = out_planes
+		self.conv = nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride, padding=padding, dilation=dilation, groups=groups, bias=bias)
+		self.bn = nn.BatchNorm2d(out_planes,eps=1e-5, momentum=0.01, affine=True) if bn else None
+		self.relu = nn.ReLU() if relu else None
+		self.init_weights()
 
-    def init_weights(self):
-        init_layer(self.conv)
-        init_bn(self.bn)
-        
+	def init_weights(self):
+		init_layer(self.conv)
+		init_bn(self.bn)
+		
 
-    def forward(self, x):
-        x = self.conv(x)
-        if self.bn is not None:
-            x = self.bn(x)
-        if self.relu is not None:
-            x = self.relu(x)
-        return x
+	def forward(self, x):
+		x = self.conv(x)
+		if self.bn is not None:
+			x = self.bn(x)
+		if self.relu is not None:
+			x = self.relu(x)
+		return x
 
 class Flatten(nn.Module):
-    def forward(self, x):
-        return x.view(x.size(0), -1)
+	def forward(self, x):
+		return x.view(x.size(0), -1)
 
 class ChannelGate(nn.Module):
-    def __init__(self, gate_channels, reduction_ratio=16, pool_types=['avg', 'max']):
-        super(ChannelGate, self).__init__()
-        self.gate_channels = gate_channels
-        self.mlp = nn.Sequential(
-            Flatten(),
-            nn.Linear(gate_channels, gate_channels // reduction_ratio),
-            nn.ReLU(),
-            nn.Linear(gate_channels // reduction_ratio, gate_channels)
-            )
-        self.pool_types = pool_types
-    def forward(self, x):
-        channel_att_sum = None
-        for pool_type in self.pool_types:
-            if pool_type=='avg':
-                avg_pool = F.avg_pool2d( x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
-                channel_att_raw = self.mlp( avg_pool )
-            elif pool_type=='max':
-                max_pool = F.max_pool2d( x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
-                channel_att_raw = self.mlp( max_pool )
-            elif pool_type=='lp':
-                lp_pool = F.lp_pool2d( x, 2, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
-                channel_att_raw = self.mlp( lp_pool )
-            elif pool_type=='lse':
-                # LSE pool only
-                lse_pool = logsumexp_2d(x)
-                channel_att_raw = self.mlp( lse_pool )
+	def __init__(self, gate_channels, reduction_ratio=16, pool_types=['avg', 'max']):
+		super(ChannelGate, self).__init__()
+		self.gate_channels = gate_channels
+		self.mlp = nn.Sequential(
+			Flatten(),
+			nn.Linear(gate_channels, gate_channels // reduction_ratio),
+			nn.ReLU(),
+			nn.Linear(gate_channels // reduction_ratio, gate_channels)
+			)
+		self.pool_types = pool_types
+	def forward(self, x):
+		channel_att_sum = None
+		for pool_type in self.pool_types:
+			if pool_type=='avg':
+				avg_pool = F.avg_pool2d( x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
+				channel_att_raw = self.mlp( avg_pool )
+			elif pool_type=='max':
+				max_pool = F.max_pool2d( x, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
+				channel_att_raw = self.mlp( max_pool )
+			elif pool_type=='lp':
+				lp_pool = F.lp_pool2d( x, 2, (x.size(2), x.size(3)), stride=(x.size(2), x.size(3)))
+				channel_att_raw = self.mlp( lp_pool )
+			elif pool_type=='lse':
+				# LSE pool only
+				lse_pool = logsumexp_2d(x)
+				channel_att_raw = self.mlp( lse_pool )
 
-            if channel_att_sum is None:
-                channel_att_sum = channel_att_raw
-            else:
-                channel_att_sum = channel_att_sum + channel_att_raw
+			if channel_att_sum is None:
+				channel_att_sum = channel_att_raw
+			else:
+				channel_att_sum = channel_att_sum + channel_att_raw
 
-        scale = torch.sigmoid( channel_att_sum ).unsqueeze(2).unsqueeze(3).expand_as(x)
-        return x * scale
+		scale = torch.sigmoid( sigmoid_slope*channel_att_sum ).unsqueeze(2).unsqueeze(3).expand_as(x)
+		return x * scale
 
 def logsumexp_2d(tensor):
-    tensor_flatten = tensor.view(tensor.size(0), tensor.size(1), -1)
-    s, _ = torch.max(tensor_flatten, dim=2, keepdim=True)
-    outputs = s + (tensor_flatten - s).exp().sum(dim=2, keepdim=True).log()
-    return outputs
+	tensor_flatten = tensor.view(tensor.size(0), tensor.size(1), -1)
+	s, _ = torch.max(tensor_flatten, dim=2, keepdim=True)
+	outputs = s + (tensor_flatten - s).exp().sum(dim=2, keepdim=True).log()
+	return outputs
 
 class ChannelPool(nn.Module):
-    def forward(self, x):
-        return torch.cat( (torch.max(x,1)[0].unsqueeze(1), torch.mean(x,1).unsqueeze(1)), dim=1 )
+	def forward(self, x):
+		return torch.cat( (torch.max(x,1)[0].unsqueeze(1), torch.mean(x,1).unsqueeze(1)), dim=1 )
+
+class TemporalGate(nn.Module):
+	def __init__(self, nclass, n_freq):
+		super(TemporalGate, self).__init__()
+		kernel_size = 7
+		self.compress = ChannelPool()
+		self.spatial = BasicConv(2, nclass, (kernel_size,n_freq), stride=1, padding=((kernel_size-1) // 2, 0), relu=False)
+		self.n_freq = n_freq
+	def forward(self, x):
+		x_compress = self.compress(x)
+		x_out = self.spatial(x_compress)
+
+		scale = torch.sigmoid(sigmoid_slope*x_out) # broadcasting
+		
+		return scale.repeat(1,1,1,self.n_freq)
+
 
 class SpatialGate(nn.Module):
-    def __init__(self):
-        super(SpatialGate, self).__init__()
-        kernel_size = 7
-        self.compress = ChannelPool()
-        self.spatial = BasicConv(2, 10, kernel_size, stride=1, padding=(kernel_size-1) // 2, relu=False)
-    def forward(self, x):
-        x_compress = self.compress(x)
-        x_out = self.spatial(x_compress)
-        scale = torch.sigmoid(x_out) # broadcasting
-        return scale
+	def __init__(self):
+		super(SpatialGate, self).__init__()
+		kernel_size = 7
+		self.compress = ChannelPool()
+		self.spatial = BasicConv(2, 10, kernel_size, stride=1, padding=(kernel_size-1) // 2, relu=False)
+	def forward(self, x):
+		x_compress = self.compress(x)
+		x_out = self.spatial(x_compress)
+		scale = torch.sigmoid(sigmoid_slope*x_out) # broadcasting
+		return scale
 
 class CBAM(nn.Module):
-    def __init__(self, gate_channels, reduction_ratio=16, pool_types=['avg', 'max'], no_spatial=False):
-        super(CBAM, self).__init__()
-        self.ChannelGate = ChannelGate(gate_channels, reduction_ratio, pool_types)
-        self.no_spatial=no_spatial
-        
-        if not no_spatial:
-            self.SpatialGate = SpatialGate()
-    def forward(self, x, perturb_dim):
-        #pause()
-        x_out = self.ChannelGate(x)
-        
-        if not self.no_spatial:
-            sp_att = self.SpatialGate(x_out)
-       
-        batch_ptb,ch,tm,fr = x_out.shape 
-        
-        if perturb_dim > 0:
+	def __init__(self, nclass, gate_channels, reduction_ratio=16, 
+				pool_types=['avg', 'max'], n_freq=8, no_spatial=False):
+		super(CBAM, self).__init__()
+		self.ChannelGate = ChannelGate(gate_channels, reduction_ratio, pool_types)
+		self.no_spatial=no_spatial
+		self.n_freq = n_freq
+		if not no_spatial:
+			#self.SpatialGate = SpatialGate()
+			self.TemporalGate = TemporalGate(nclass, n_freq)
+	def forward(self, x, perturb_dim):
+		
+		x_out = self.ChannelGate(x)
+		
+		if not self.no_spatial:
+			#sp_att = self.SpatialGate(x_out)
+			sp_att = self.TemporalGate(x_out)
+		batch_ptb,ch,tm,fr = x_out.shape 
+		
+		if perturb_dim > 0:
+			
+			x_out = x_out.view(int(batch_ptb/perturb_dim),perturb_dim,ch,tm,fr).unsqueeze(-1)
 
-        	x_out = x_out.view(int(batch_ptb/perturb_dim),perturb_dim,ch,tm,fr).unsqueeze(-1)
+			sp_att = sp_att.view(int(batch_ptb/perturb_dim),perturb_dim,10,tm,fr).unsqueeze(-1).permute(0,1,-1,3,4,2)
 
-        	sp_att = sp_att.view(int(batch_ptb/perturb_dim),perturb_dim,10,tm,fr).unsqueeze(-1).permute(0,1,-1,3,4,2)
-
-        	x_out = x_out[:,0,:,:,:]
-        
-        	mean_att = torch.mean(sp_att,axis=1)
+			x_out = x_out[:,0,:,:,:]
+		
+			mean_att = torch.mean(sp_att,axis=1)
   
-        	return x_out*mean_att, sp_att
-        #else: 
-        #	sp_att = sp_att.unsqueeze(-1).permute(0,-1,2,3,1)
-       	# 	return x_out.unsqueeze(-1)*sp_att, sp_att		
-        
+			return x_out*mean_att, sp_att
+		#else: 
+		#	sp_att = sp_att.unsqueeze(-1).permute(0,-1,2,3,1)
+		# 	return x_out.unsqueeze(-1)*sp_att, sp_att		
+		

@@ -43,6 +43,7 @@ class Scaler(object):
         shape = None
 
         counter = 0
+        
         for sample in tqdm(dataset):
             
             if type(sample) in [tuple, list] and len(sample)==2:

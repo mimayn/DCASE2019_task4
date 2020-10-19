@@ -16,8 +16,10 @@ import torch
 from torch import nn
 from dcase_util.data import DecisionEncoder
 
-from DataLoad import AddSprinkleMaskPerturbation, AugmentGaussianNoise, ApplyLog, PadOrTrunc, ToTensor, Normalize, Compose
-
+from DataLoad import AddSprinkleMaskPerturbation, AugmentGaussianNoise, ApplyLog 
+from DataLoad import ApplySimpleLog, PadOrTrunc, ToTensor, Normalize, Compose, AddMixedVersions
+from DataLoad import AddRandomFrequencyMasks, AddRandomTimeShifts
+from pdb import set_trace as pause
 
 class ManyHotEncoder:
     """"
@@ -61,7 +63,7 @@ class ManyHotEncoder:
                 labels = labels["event_label"]
         y = np.zeros(len(self.labels))
         for label in labels:
-            if not pd.isna(label):
+            if not pd.isna(label) and (label in self.labels):
                 i = self.labels.index(label)
                 y[i] = 1
         return y
@@ -77,7 +79,7 @@ class ManyHotEncoder:
             numpy.array
             Encoded labels, 1 where the label is present, 0 otherwise
         """
-
+        
         assert self.n_frames is not None, "n_frames need to be specified when using strong encoder"
         if type(label_df) is str:
             if label_df == 'empty':
@@ -87,7 +89,7 @@ class ManyHotEncoder:
         if type(label_df) is pd.DataFrame:
             if {"onset", "offset", "event_label"}.issubset(label_df.columns):
                 for _, row in label_df.iterrows():
-                    if not pd.isna(row["event_label"]):
+                    if not pd.isna(row["event_label"]) and (row["event_label"] in self.labels):
                         i = self.labels.index(row["event_label"])
                         onset = int(row["onset"])
                         offset = int(row["offset"])
@@ -96,7 +98,7 @@ class ManyHotEncoder:
         elif type(label_df) in [pd.Series, list, np.ndarray]:  # list of list or list of strings
             if type(label_df) is pd.Series:
                 if {"onset", "offset", "event_label"}.issubset(label_df.index):  # means only one value
-                    if not pd.isna(label_df["event_label"]):
+                    if not pd.isna(label_df["event_label"]) and (label_df["event_label"] in self.labels):
                         i = self.labels.index(label_df["event_label"])
                         onset = int(label_df["onset"])
                         offset = int(label_df["offset"])
@@ -106,13 +108,13 @@ class ManyHotEncoder:
             for event_label in label_df:
                 # List of string, so weak labels to be encoded in strong
                 if type(event_label) is str:
-                    if event_label is not "":
+                    if event_label is not "" and (event_label in self.labels):
                         i = self.labels.index(event_label)
                         y[:, i] = 1
 
                 # List of list, with [label, onset, offset]
                 elif len(event_label) == 3:
-                    if event_label[0] is not "":
+                    if event_label[0] is not "" and (event_label[0] in self.labels):
                         i = self.labels.index(event_label[0])
                         onset = int(event_label[1])
                         offset = int(event_label[2])
@@ -208,10 +210,12 @@ def weights_init(m):
     Args:
         m: the model to initialize
     """
+    #pause()
     classname = m.__class__.__name__
     if classname.find('Conv2d') != -1:
         nn.init.xavier_uniform_(m.weight, gain=np.sqrt(2))
-        m.bias.data.fill_(0)
+        if m.bias is not None:
+            m.bias.data.fill_(0)
     elif classname.find('BatchNorm') != -1:
         m.weight.data.normal_(1.0, 0.02)
         m.bias.data.fill_(0)
@@ -394,7 +398,7 @@ class AverageMeter:
         return "{self.avg:{format}}".format(self=self, format=format)
 
 
-def get_transforms(frames, scaler=None, add_axis_conv=True, perturb_type=None, n_perturb=5):
+def get_transforms(frames, scaler=None, add_axis_conv=True, perturb_type=None, n_perturb=5, frac=.25):
     transf = []
     unsqueeze_axis = None
     if add_axis_conv:
@@ -406,17 +410,27 @@ def get_transforms(frames, scaler=None, add_axis_conv=True, perturb_type=None, n
             transf.append(AugmentGaussianNoise(mean=0., std=0.5))
 
         if perturb_type == "random_mask":
-            transf.append(AddSprinkleMaskPerturbation(n_perturb=n_perturb, perturb_type='random_mask',frac=0.25))        
+            transf.append(AddSprinkleMaskPerturbation(n_perturb=n_perturb, perturb_type='random_mask',frac=frac))        
+
+        if perturb_type == "add_mixtures":
+            transf.append(AddMixedVersions(n_perturb=n_perturb))
+
+        if perturb_type == "add_freq_masks":
+            transf.append(AddRandomFrequencyMasks(n_perturb=n_perturb, n_masks=3, max_bw=16))
+
+        if perturb_type == "add_time_shifts":
+            transf.append(AddRandomTimeShifts(n_perturb=n_perturb))                    
+
 
     transf.extend([ApplyLog(), PadOrTrunc(nb_frames=frames),  ToTensor(unsqueeze_axis=unsqueeze_axis)])
+    #transf.extend([ApplySimpleLog(), PadOrTrunc(nb_frames=frames),  ToTensor(unsqueeze_axis=unsqueeze_axis)])
     if scaler is not None:
         transf.append(Normalize(scaler=scaler))
 
     return Compose(transf)
 
+
 from visdom import Visdom
-
-
 
 class VisdomLinePlotter(object):
     """Plots to Visdom"""
@@ -435,3 +449,68 @@ class VisdomLinePlotter(object):
         else:
             self.viz.line(X=np.array([x]), Y=np.array([y]), env=self.env, win=self.plots[var_name], name=split_name, update = 'append')
 
+
+
+def get_class_weights(df):
+    #synthetic_dataframe
+    n_tot_files = len(df.filename.unique())
+    if 'event_label' in df.columns:
+        classes = df.event_label.dropna().sort_values().unique()
+        
+        files_by_class_dict = {}
+        file_grouped = df.groupby('filename')
+        for cl in classes:
+            s =file_grouped['event_label'].apply(lambda x: cl in x.values)
+            files_by_class_dict[cl] = s.index.values[s.values]
+
+    
+    elif 'event_labels' in df.columns: #weak recorded dataframe
+
+        classes = sorted(list(set(df.event_labels.apply(lambda s: s.split(',')).sum())))
+        files_by_class_dict = {}
+        for cl in classes:
+            
+            files_by_class_dict[cl] = df[df.event_labels.apply(lambda s: cl in s.split(','))].filename.values
+            
+    class_percent = np.array([len(files_by_class_dict[k])/n_tot_files for k in files_by_class_dict.keys()])
+    weights = np.min(class_percent)/class_percent        
+    
+    return weights, files_by_class_dict        
+
+def filter_subclass_df(df,subclass_list):
+    # filter out the respective positive examples
+    
+    if 'event_label' in df.columns: #synthetic audio dataframe
+        df.loc[~df.event_label.apply(lambda s: s in subclass_list),'event_label'] = None
+    
+    elif 'event_labels' in df.columns: #weak recorded dataframe
+        df.event_labels = df.event_labels.apply(lambda s: ",".join(list(set(s.split(',')).intersection(set(subclass_list)))))
+        #df = df[weak_df.event_labels != ""].reset_index(drop=True)
+    return df        
+
+def balance_df(df,subclass_list):
+    # filter out the respective positive examples
+    
+    if 'event_label' in df.columns: #synthetic audio dataframe
+        target_df = df[df.event_label.apply(lambda s: s in subclass_list)].reset_index(drop=True)
+        nontarget_df = df[~df.event_label.apply(lambda s: s in subclass_list)].reset_index(drop=True)
+    
+        if len(nontarget_df) > len(target_df):    
+            n_target_files = len(target_df.filename.unique())
+            selected_nontarget_files = np.random.permutation(nontarget_df.filename.unique())[:n_target_files]
+            balanced_df = pd.concat([target_df, nontarget_df[nontarget_df['filename'].isin(selected_nontarget_files)].reset_index(drop=True)]).reset_index(drop=True)
+        else:
+            balanced_df = df
+
+    elif 'event_labels' in df.columns:
+        
+        df.event_labels = df.event_labels.apply(lambda s: ",".join(list(set(s.split(',')).intersection(set(subclass_list)))))
+        target_df = df[df.event_labels != ""].reset_index(drop=True)
+        nontarget_df = df[df.event_labels == ""].reset_index(drop=True)
+    
+        if len(nontarget_df) > len(target_df):
+            balanced_df = pd.concat([target_df, nontarget_df.sample(frac=1).reset_index(drop=True)[:len(target_df)]]).reset_index(drop=True)
+        else:
+            balanced_df=df
+
+    return balanced_df.sample(frac=1).reset_index(drop=True) 

@@ -15,6 +15,7 @@ import config as cfg
 from utils.Logger import LOG
 from utils.utils import ManyHotEncoder, to_cuda_if_available
 from pdb import set_trace as pause
+import matplotlib.pyplot as plt
 
 def get_f_measure_by_class(torch_model, nb_tags, dataloader_, thresholds_=None):
     """ get f measure for each class given a model and a generator of data (batch_x, y)
@@ -29,6 +30,7 @@ def get_f_measure_by_class(torch_model, nb_tags, dataloader_, thresholds_=None):
         macro_f_measure : list, f measure for each class
 
     """
+    
     if torch.cuda.is_available():
         torch_model = torch_model.cuda()
 
@@ -40,8 +42,20 @@ def get_f_measure_by_class(torch_model, nb_tags, dataloader_, thresholds_=None):
     for counter, (batch_x, y) in enumerate(dataloader_):
         if torch.cuda.is_available():
             batch_x = batch_x.cuda()
+            
+        if len(batch_x.size())==4:
+            batch_x = batch_x.unsqueeze(-1)
 
         pred_strong, pred_weak, att_map = torch_model(batch_x)
+        
+        ######## experimental replacement of 
+        #direct weak_pred with max over weak_strong
+        #pred_weak = pred_strong.max(-2)[0]
+
+
+        bp, c = pred_weak.size()
+        pred_weak = pred_weak.view(int(bp/batch_x.shape[-1]),batch_x.shape[-1],c)[:,0,:] 
+
         pred_weak = pred_weak.cpu().data.numpy()
         labels = y.numpy()
 
@@ -75,7 +89,7 @@ def get_f_measure_by_class(torch_model, nb_tags, dataloader_, thresholds_=None):
         fp += fp_
         fn += fn_
         tn += tn_
-
+    
     macro_f_measure = np.zeros(nb_tags)
     mask_f_score = 2 * tp + fp + fn != 0
     macro_f_measure[mask_f_score] = 2 * tp[mask_f_score] / (2 * tp + fp + fn)[mask_f_score]
@@ -130,14 +144,14 @@ def event_based_evaluation_df(reference, estimated, t_collar=0.200, percentage_o
     estimated events to be compared with reference
     :return: sed_eval.sound_event.EventBasedMetrics with the scores
     """
-
+    
     evaluated_files = reference["filename"].unique()
 
     classes = []
     classes.extend(reference.event_label.dropna().unique())
     classes.extend(estimated.event_label.dropna().unique())
     classes = list(set(classes))
-
+    
     event_based_metric = sed_eval.sound_event.EventBasedMetrics(
         event_label_list=classes,
         t_collar=t_collar,
@@ -200,11 +214,27 @@ def macro_f_measure(tp, fp, fn):
     return macro_f_score
 
 
+def plot_predictions():
+    plt.subplot(10,1)
+    for i in range(10):
+        plt.subplot(10,1,i)
+
+
 def get_predictions(model, valid_dataset, decoder, pooling_time_ratio=1, save_predictions=None):
+    
     for i, (input, _) in tqdm(enumerate(valid_dataset),total =len(valid_dataset)):
         [input] = to_cuda_if_available([input])
+        
+        if len(input.size())==3:
+            input = input.unsqueeze(-1)
 
         pred_strong, _, att_map = model(input.unsqueeze(0))
+        bp, t, c = pred_strong.size()
+        
+        #if considering only the original (non-transformed samples in the performance calculation)
+        pred_strong = pred_strong.view(int(bp/input.shape[-1]),input.shape[-1],t,c)[:,0,:,:] 
+
+        #otherwise calculate the performance over the original and all its transformations
 
 # -------------- prediction from the end of the network --------------------
         pred_strong = pred_strong.cpu()
@@ -229,8 +259,12 @@ def get_predictions(model, valid_dataset, decoder, pooling_time_ratio=1, save_pr
 
 # -------------Processing implicit predictions from the attention network ------
         
-        att_pred_strong = att_map[:,0,:,:,:].squeeze() #implicit strong predictions through the attention network         
+        #if considering the performance calculation over the original samples only
+        att_pred_strong = att_map[:,0,:,:] #implicit strong predictions through the attention network         
         
+        #otherwise if including the transformations also in the performance measure : 
+        #att_pred_strong=att_map.view(-1,*att_map.shape[2:])
+
         att_pred_strong = att_pred_strong.cpu()
         att_pred_strong = att_pred_strong.squeeze(0).detach().numpy()
         
@@ -271,17 +305,18 @@ def get_predictions(model, valid_dataset, decoder, pooling_time_ratio=1, save_pr
 
 
 def compute_strong_metrics(predictions, valid_df, pooling_time_ratio=None):
+    
     if pooling_time_ratio is not None:
         LOG.warning("pooling_time_ratio is deprecated, use it in get_predictions() instead.")
         # In seconds
         predictions.onset = predictions.onset * pooling_time_ratio / (cfg.sample_rate / cfg.hop_length)
         predictions.offset = predictions.offset * pooling_time_ratio / (cfg.sample_rate / cfg.hop_length)
 
-    metric_event = event_based_evaluation_df(valid_df, predictions, t_collar=0.200,
+    metric_event = event_based_evaluation_df(valid_df.dropna(), predictions, t_collar=0.200,
                                                       percentage_of_length=0.2)
-    metric_segment = segment_based_evaluation_df(valid_df, predictions, time_resolution=1.)
+    #metric_segment = segment_based_evaluation_df(valid_df.dropna(), predictions, time_resolution=1.)
     LOG.info(metric_event)
-    LOG.info(metric_segment)
+    #LOG.info(metric_segment)
     return metric_event
 
 
@@ -296,6 +331,7 @@ def format_df(df, mhe):
 
 
 def audio_tagging_results(reference, estimated):
+    
     classes = []
     if "event_label" in reference.columns:
         classes.extend(reference.event_label.dropna().unique())
